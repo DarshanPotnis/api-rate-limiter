@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>API Rate Limiter Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+  <nav>
+    <div class="logo"> API Rate Limiter</div>
+  </nav>
+
+  <section class="hero">
+    <div class="hero-text">
+      <h1>What is an API Rate Limiter?</h1>
+      <p>
+        A real-time gateway that protects APIs from abuse using
+        Redis-backed rate limiting and API key authentication.
+      </p>
+      <button onclick="scrollToDashboard()">Get Started</button>
+    </div>
+  </section>
+
+  <section class="dashboard" id="dashboard">
+    <div class="card">
+      <h2>Test Protected API</h2>
+
+      <div class="api-key-group">
+        <select id="apiTier" onchange="setApiKey()">
+          <option value="free-tier-key">Free Tier</option>
+          <option value="pro-tier-key">Pro Tier</option>
+          <option value="enterprise-key">Enterprise Tier</option>
+        </select>
+
+        <input
+          id="apiKey"
+          value="free-tier-key"
+          placeholder="Enter API Key"
+        />
+      </div>
+
+      <button onclick="callAPI()">Call Protected API</button>
+
+      <div id="statusBadge" class="badge hidden"></div>
+
+      <div class="progress-container hidden" id="progressContainer">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+
+      <div class="reset-timer hidden" id="resetTimer">
+        ⏳ Resets in <span id="countdown">--</span> seconds
+      </div>
+
+      <div class="result" id="result"></div>
+    </div>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
