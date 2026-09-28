@@ -164,8 +164,13 @@ async def test_a_provider_failure_releases_the_reservation(
     key: str,
 ) -> None:
     class FailingProvider:
+        name = "failing"
+
         async def complete(self, request: CompletionRequest) -> Completion:
             raise ProviderError("backend unavailable")
+
+        async def is_available(self, model: str) -> bool:
+            return True
 
     as_caller(TEST_TIER)
     use_provider(FailingProvider())
@@ -186,10 +191,15 @@ async def test_a_cancelled_request_releases_the_reservation(
     started = anyio.Event()
 
     class SlowProvider:
+        name = "slow"
+
         async def complete(self, request: CompletionRequest) -> Completion:
             started.set()
             await anyio.sleep(30)
             raise AssertionError("the request should have been cancelled")
+
+        async def is_available(self, model: str) -> bool:
+            return True
 
     as_caller(TEST_TIER)
     use_provider(SlowProvider())

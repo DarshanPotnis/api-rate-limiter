@@ -13,6 +13,8 @@ class MockProvider:
     match what the gateway reserved for the prompt.
     """
 
+    name = "mock"
+
     def __init__(self, *, latency_seconds: float = 0.0) -> None:
         if latency_seconds < 0:
             raise ValueError(f"latency_seconds must not be negative, got {latency_seconds}")
@@ -30,3 +32,6 @@ class MockProvider:
             prompt_tokens=estimate_prompt_tokens(request.messages),
             completion_tokens=estimate_tokens(content),
         )
+
+    async def is_available(self, model: str) -> bool:
+        return True

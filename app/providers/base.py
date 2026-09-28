@@ -33,10 +33,25 @@ class Completion:
 
 
 class ProviderError(Exception):
-    """The backend could not produce a completion: unreachable, timed out, or returned an error."""
+    """The backend could not produce a completion. Used as-is when it answered with something broken."""
+
+
+class ProviderUnavailable(ProviderError):
+    """The backend cannot be reached, or does not have the requested model."""
+
+
+class ProviderTimeout(ProviderError):
+    """The backend accepted the request but did not answer in time."""
 
 
 class Provider(Protocol):
+    name: str
+    """Short backend name reported to clients, such as "mock" or "ollama"."""
+
     async def complete(self, request: CompletionRequest) -> Completion:
         """Generate one reply of at most ``request.max_tokens`` tokens. Raises ``ProviderError``."""
+        ...
+
+    async def is_available(self, model: str) -> bool:
+        """Whether ``model`` can be served right now. Never raises."""
         ...
