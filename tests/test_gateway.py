@@ -13,10 +13,12 @@ from app.budgets.fixed_window import KEY_PREFIX
 from app.gateway.app import gateway
 from app.gateway.auth import Caller, get_caller
 from app.budgets import TokenBudget
-from app.gateway.dependencies import get_providers, get_token_budget
+from app.gateway.dependencies import get_registry, get_token_budget
 from app.main import app
 from app.providers import Completion, CompletionRequest, MockProvider, Provider, ProviderError
+from app.routing import ModelRegistry
 from app.tiers import Tier
+from tests.fake_ollama import OLLAMA_MODEL, Handler, ollama_down, ollama_hangs, ollama_provider, ollama_up
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("token_window_has_room")]
 
@@ -49,8 +51,29 @@ def as_caller(key: str) -> Callable[[Tier], None]:
     return use
 
 
+class FailingProvider:
+    name = "failing"
+
+    async def complete(self, request: CompletionRequest) -> Completion:
+        raise ProviderError("backend unavailable")
+
+    async def is_available(self, model: str) -> bool:
+        return True
+
+
+def use_registry(registry: ModelRegistry) -> None:
+    gateway.dependency_overrides[get_registry] = lambda: registry
+
+
 def use_provider(provider: Provider) -> None:
-    gateway.dependency_overrides[get_providers] = lambda: {"mock": provider}
+    """Serve only "mock", answered by ``provider``."""
+    use_registry(ModelRegistry(models={"mock": provider}, aliases={}))
+
+
+def use_ollama(handler: Handler, *, mock: Provider | None = None) -> None:
+    """Serve "mock", the Ollama model through a fake Ollama, and "auto" = Ollama, then mock."""
+    models = {"mock": mock or MockProvider(), OLLAMA_MODEL: ollama_provider(handler)}
+    use_registry(ModelRegistry(models=models, aliases={"auto": [OLLAMA_MODEL, "mock"]}))
 
 
 async def tokens_used(client: redis.asyncio.Redis, user_id: str) -> int:
@@ -121,6 +144,7 @@ async def test_successful_response_has_the_openai_shape(
         }
     ]
     assert body["usage"] == {"prompt_tokens": 3, "completion_tokens": 7, "total_tokens": 10}
+    assert response.headers["x-gateway-provider"] == "mock"
     for name in ("requests", "tokens"):
         for header in ("limit", "remaining", "reset"):
             assert f"x-ratelimit-{header}-{name}" in response.headers
@@ -163,15 +187,6 @@ async def test_a_provider_failure_releases_the_reservation(
     async_redis_db: redis.asyncio.Redis,
     key: str,
 ) -> None:
-    class FailingProvider:
-        name = "failing"
-
-        async def complete(self, request: CompletionRequest) -> Completion:
-            raise ProviderError("backend unavailable")
-
-        async def is_available(self, model: str) -> bool:
-            return True
-
     as_caller(TEST_TIER)
     use_provider(FailingProvider())
 
@@ -282,12 +297,138 @@ async def test_an_unknown_model_returns_404(client: httpx.AsyncClient, as_caller
     assert response.json()["error"]["param"] == "model"
 
 
-async def test_models_lists_the_mock_model(client: httpx.AsyncClient) -> None:
+async def test_models_without_ollama_lists_mock_and_auto(client: httpx.AsyncClient) -> None:
     response = await client.get("/v1/models", headers=bearer("free-tier-key"))
 
     assert response.status_code == 200
     assert response.json()["object"] == "list"
-    assert [(m["id"], m["object"]) for m in response.json()["data"]] == [("mock", "model")]
+    assert [(m["id"], m["object"]) for m in response.json()["data"]] == [("mock", "model"), ("auto", "model")]
+
+
+@pytest.mark.parametrize(
+    ("handler", "listed"),
+    [
+        (ollama_up(), {"mock": "mock", OLLAMA_MODEL: "ollama", "auto": "gateway"}),
+        (ollama_up(models=("qwen3:4b",)), {"mock": "mock", "auto": "gateway"}),
+        (ollama_down, {"mock": "mock", "auto": "gateway"}),
+    ],
+    ids=["pulled", "not-pulled", "down"],
+)
+async def test_models_reflects_what_ollama_reports(
+    client: httpx.AsyncClient, handler: Handler, listed: dict[str, str]
+) -> None:
+    use_ollama(handler)
+
+    response = await client.get("/v1/models", headers=bearer("free-tier-key"))
+
+    assert {m["id"]: m["owned_by"] for m in response.json()["data"]} == listed
+
+
+async def test_ollamas_real_token_counts_are_what_gets_settled(
+    client: httpx.AsyncClient,
+    as_caller: Callable[[Tier], None],
+    async_redis_db: redis.asyncio.Redis,
+    key: str,
+) -> None:
+    as_caller(TEST_TIER)
+    use_ollama(ollama_up(prompt_eval_count=37, eval_count=12))
+
+    response = await completions(client, {**chat(max_tokens=50), "model": OLLAMA_MODEL})  # reserves 1 + 50
+
+    assert response.status_code == 200
+    assert response.json()["usage"] == {"prompt_tokens": 37, "completion_tokens": 12, "total_tokens": 49}
+    assert response.headers["x-ratelimit-remaining-tokens"] == "51"
+    assert await tokens_used(async_redis_db, key) == 49
+
+
+@pytest.mark.parametrize(
+    ("handler", "status_code", "code"),
+    [(ollama_down, 503, "model_unavailable"), (ollama_hangs, 504, "provider_timeout")],
+    ids=["down", "timed-out"],
+)
+async def test_a_specific_model_that_fails_returns_an_error_and_releases_the_reservation(
+    client: httpx.AsyncClient,
+    as_caller: Callable[[Tier], None],
+    async_redis_db: redis.asyncio.Redis,
+    key: str,
+    handler: Handler,
+    status_code: int,
+    code: str,
+) -> None:
+    as_caller(TEST_TIER)
+    use_ollama(handler)
+
+    response = await completions(client, {**chat(max_tokens=50), "model": OLLAMA_MODEL})
+
+    assert response.status_code == status_code
+    assert response.json()["error"]["type"] == "server_error"
+    assert response.json()["error"]["code"] == code
+    assert await tokens_used(async_redis_db, key) == 0
+
+
+@pytest.mark.parametrize(
+    ("handler", "should_retry"), [(ollama_hangs, "false"), (ollama_down, None)], ids=["timed-out", "down"]
+)
+async def test_only_a_timeout_tells_clients_not_to_retry(
+    client: httpx.AsyncClient, as_caller: Callable[[Tier], None], handler: Handler, should_retry: str | None
+) -> None:
+    as_caller(TEST_TIER)
+    use_ollama(handler)
+
+    response = await completions(client, {**chat(), "model": OLLAMA_MODEL})
+
+    assert response.headers.get("x-should-retry") == should_retry
+
+
+async def test_auto_falls_back_to_mock_when_ollama_is_down(
+    client: httpx.AsyncClient, as_caller: Callable[[Tier], None]
+) -> None:
+    as_caller(TEST_TIER)
+    use_ollama(ollama_down)
+
+    response = await completions(client, {**chat(), "model": "auto"})
+
+    assert response.status_code == 200
+    assert response.headers["x-gateway-provider"] == "mock"
+    assert response.json()["model"] == "mock"
+    assert response.json()["choices"][0]["message"]["content"] == "Mock reply to: hi"
+
+
+async def test_auto_is_answered_by_ollama_while_it_is_up(
+    client: httpx.AsyncClient, as_caller: Callable[[Tier], None]
+) -> None:
+    as_caller(TEST_TIER)
+    use_ollama(ollama_up())
+
+    response = await completions(client, {**chat(), "model": "auto"})
+
+    assert response.headers["x-gateway-provider"] == "ollama"
+    assert response.json()["model"] == OLLAMA_MODEL
+    assert response.json()["choices"][0]["message"]["content"] == "Hello from Ollama"
+
+
+@pytest.mark.parametrize(
+    ("handler", "should_retry"), [(ollama_down, None), (ollama_hangs, "false")], ids=["down", "timed-out"]
+)
+async def test_every_provider_in_the_chain_failing_returns_502_and_releases_the_reservation(
+    client: httpx.AsyncClient,
+    as_caller: Callable[[Tier], None],
+    async_redis_db: redis.asyncio.Redis,
+    key: str,
+    handler: Handler,
+    should_retry: str | None,
+) -> None:
+    as_caller(TEST_TIER)
+    use_ollama(handler, mock=FailingProvider())
+
+    response = await completions(client, {**chat(max_tokens=50), "model": "auto"})
+
+    error = response.json()["error"]
+    assert response.status_code == 502
+    assert (error["type"], error["code"]) == ("server_error", "all_providers_failed")
+    assert OLLAMA_MODEL in error["message"] and "mock" in error["message"]
+    assert response.headers.get("x-should-retry") == should_retry
+    assert await tokens_used(async_redis_db, key) == 0
 
 
 async def test_streaming_is_rejected(client: httpx.AsyncClient, as_caller: Callable[[Tier], None]) -> None:

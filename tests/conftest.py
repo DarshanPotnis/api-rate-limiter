@@ -20,6 +20,16 @@ from app.main import limiter_for_tier
 from app.redis_client import get_redis
 
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
+UNREACHABLE_OLLAMA_URL = "http://127.0.0.1:9"  # nothing listens on the discard port
+
+
+@pytest.fixture(autouse=True)
+def no_real_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the app at a closed port, so no test reaches a real Ollama by accident.
+
+    The Ollama integration test opts back in explicitly.
+    """
+    monkeypatch.setenv("OLLAMA_BASE_URL", UNREACHABLE_OLLAMA_URL)
 
 
 @pytest.fixture(scope="session")
