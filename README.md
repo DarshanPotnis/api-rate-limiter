@@ -60,15 +60,26 @@ api-rate-limiter/
 ├── app/
 │   ├── main.py            # FastAPI app & routes
 │   ├── auth.py            # API key validation
-│   ├── rate_limiter.py    # Redis rate limiting logic
-│   └── redis_client.py    # Redis connection
+│   ├── config.py          # Settings from environment / .env
+│   ├── redis_client.py    # Lazily created Redis client
+│   └── limiters/
+│       ├── base.py        # RateLimiter protocol & RateLimitDecision
+│       ├── sliding_log.py # Sliding-log limiter
+│       └── scripts/
+│           └── sliding_log.lua  # Atomic check-and-record in Redis
+│
+├── tests/                 # pytest suite (needs Redis)
 │
 ├── static/
 │   ├── index.html         # Dashboard UI
 │   ├── styles.css         # Styling
 │   └── app.js             # Frontend logic
 │
+├── docker-compose.yml     # Redis 7 with healthcheck
+├── .env.example           # Configuration template
 ├── requirements.txt
+├── requirements-dev.txt   # Test dependencies
+├── pyproject.toml         # pytest configuration
 ├── README.md
 └── .gitignore
 ```
@@ -122,10 +133,31 @@ pip install -r requirements.txt
 
 ### 4️⃣ Start Redis
 
-Make sure Redis is running locally:
+```bash
+docker-compose up -d --wait
+```
+
+If port 6379 is already taken, choose another host port and point the app at it:
 
 ```bash
-redis-server
+REDIS_PORT=6380 docker-compose up -d --wait
+export REDIS_URL=redis://localhost:6380/0
+```
+
+---
+
+### ⚙️ Configuration
+
+Settings come from environment variables or a `.env` file (see `.env.example`):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis used by the app |
+| `RATE_LIMIT_REQUESTS` | `5` | Requests allowed per window, per API key |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Length of the sliding window |
+
+```bash
+cp .env.example .env
 ```
 
 ---
@@ -191,13 +223,26 @@ X-RateLimit-Reset: 1700000000
 
 ## 📈 Rate Limiting Logic
 
-- Requests are tracked **per API key**
-- Redis stores counters with expiration
-- Limits reset automatically using TTL
-- Exceeding limit returns:
+- Requests are tracked **per API key** with a **sliding log**: one sorted-set entry per admitted request, scored by its time in milliseconds
+- The check and the insert run as a single **Lua script**, so concurrent requests cannot both slip under the limit
+- The script uses the **Redis server clock**, so every app instance agrees on the window
+- Denied requests are not recorded; idle keys expire on their own
+- `X-RateLimit-Reset` is when the oldest request in the window ages out, freeing a slot
+- Exceeding the limit returns `429 Too Many Requests` with a `Retry-After` header
+
+---
+
+## ✅ Running Tests
+
+The tests need Redis and use database 15 by default, deleting only the keys they create.
+
+```bash
+pip install -r requirements-dev.txt
+docker-compose up -d --wait
+pytest
 ```
-429 Too Many Requests
-```
+
+Point them elsewhere with `TEST_REDIS_URL`, e.g. `TEST_REDIS_URL=redis://localhost:6380/15 pytest`.
 
 ---
 
