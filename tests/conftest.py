@@ -13,7 +13,7 @@ import redis
 
 from app.auth import VALID_API_KEYS
 from app.config import get_settings
-from app.main import get_limiter
+from app.main import limiter_for_tier
 from app.redis_client import get_redis
 
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
@@ -45,7 +45,7 @@ def key(redis_db: redis.Redis) -> Iterator[str]:
 
 
 def _clear_app_caches() -> None:
-    for cached in (get_settings, get_redis, get_limiter):
+    for cached in (get_settings, get_redis, limiter_for_tier):
         cached.cache_clear()
 
 

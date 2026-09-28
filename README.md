@@ -90,11 +90,13 @@ api-rate-limiter/
 
 The system simulates **multiple API tiers**:
 
-| Tier | API Key |
-|----|--------|
-| Free | `free-tier-key` |
-| Pro | `pro-tier-key` |
-| Enterprise | `enterprise-key` |
+| Tier | API Key | Requests / min | Tokens / min |
+|----|--------|----|----|
+| Free | `free-tier-key` | 5 | 2,000 |
+| Pro | `pro-tier-key` | 60 | 40,000 |
+| Enterprise | `enterprise-key` | 600 | 400,000 |
+
+Limits are defined once, in `app/tiers.py`.
 
 ❗ Any other key will return:
 ```
@@ -153,8 +155,6 @@ Settings come from environment variables or a `.env` file (see `.env.example`):
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis used by the app |
-| `RATE_LIMIT_REQUESTS` | `5` | Requests allowed per window, per API key |
-| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Length of the sliding window |
 
 ```bash
 cp .env.example .env

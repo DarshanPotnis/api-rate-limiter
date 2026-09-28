@@ -6,9 +6,9 @@ from fastapi.responses import HTMLResponse
 from pathlib import Path
 
 from app.auth import get_api_key
-from app.config import get_settings
 from app.limiters import RateLimitDecision, RateLimiter, SlidingLogLimiter
 from app.redis_client import get_redis
+from app.tiers import LIMIT_WINDOW_SECONDS, Tier, tier_for
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
@@ -19,13 +19,12 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @lru_cache
-def get_limiter() -> RateLimiter:
-    settings = get_settings()
-    return SlidingLogLimiter(
-        get_redis(),
-        limit=settings.rate_limit_requests,
-        window_seconds=settings.rate_limit_window_seconds,
-    )
+def limiter_for_tier(tier: Tier) -> RateLimiter:
+    return SlidingLogLimiter(get_redis(), limit=tier.requests_per_minute, window_seconds=LIMIT_WINDOW_SECONDS)
+
+
+def get_limiter(user_id: str = Depends(get_api_key)) -> RateLimiter:
+    return limiter_for_tier(tier_for(user_id))
 
 
 def rate_limit_headers(decision: RateLimitDecision) -> dict[str, str]:
