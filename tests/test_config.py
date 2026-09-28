@@ -66,6 +66,7 @@ def test_auto_fallback_is_a_comma_separated_list(monkeypatch: pytest.MonkeyPatch
         ("OLLAMA_BASE_URL", "not a url"),
         ("OLLAMA_MODEL", ""),
         ("OLLAMA_READ_TIMEOUT_SECONDS", "0"),
+        ("LOG_LEVEL", "LOUD"),
     ],
 )
 @pytest.mark.usefixtures("no_dotenv")
