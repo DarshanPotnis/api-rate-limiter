@@ -375,7 +375,7 @@ async def test_only_a_timeout_tells_clients_not_to_retry(
     as_caller(TEST_TIER)
     use_ollama(handler)
 
-    response = await completions(client, {**chat(), "model": OLLAMA_MODEL})
+    response = await completions(client, {**chat(max_tokens=16), "model": OLLAMA_MODEL})
 
     assert response.headers.get("x-should-retry") == should_retry
 
@@ -386,7 +386,7 @@ async def test_auto_falls_back_to_mock_when_ollama_is_down(
     as_caller(TEST_TIER)
     use_ollama(ollama_down)
 
-    response = await completions(client, {**chat(), "model": "auto"})
+    response = await completions(client, {**chat(max_tokens=16), "model": "auto"})
 
     assert response.status_code == 200
     assert response.headers["x-gateway-provider"] == "mock"
@@ -400,7 +400,7 @@ async def test_auto_is_answered_by_ollama_while_it_is_up(
     as_caller(TEST_TIER)
     use_ollama(ollama_up())
 
-    response = await completions(client, {**chat(), "model": "auto"})
+    response = await completions(client, {**chat(max_tokens=16), "model": "auto"})
 
     assert response.headers["x-gateway-provider"] == "ollama"
     assert response.json()["model"] == OLLAMA_MODEL
