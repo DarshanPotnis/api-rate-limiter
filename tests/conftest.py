@@ -6,13 +6,10 @@ and each test deletes only the keys it created, so the app's data is never touch
 
 import os
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 
 import pytest
 import redis
-from fastapi import HTTPException
-
-from app import rate_limiter
 
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
 
@@ -40,20 +37,3 @@ def key(redis_db: redis.Redis) -> Iterator[str]:
     created = list(redis_db.scan_iter(match=f"*{key}*"))
     if created:
         redis_db.delete(*created)
-
-
-@pytest.fixture
-def hit(redis_db: redis.Redis, monkeypatch: pytest.MonkeyPatch) -> Callable[[str], bool]:
-    """Send one request for a key through the current limiter; returns True if it was admitted."""
-    monkeypatch.setattr(rate_limiter, "redis_client", redis_db)
-
-    def _hit(key: str) -> bool:
-        try:
-            rate_limiter.rate_limit(key, "test")
-        except HTTPException as exc:
-            if exc.status_code != 429:
-                raise
-            return False
-        return True
-
-    return _hit

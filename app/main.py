@@ -1,17 +1,36 @@
-from fastapi import FastAPI, Depends, Response
+from functools import lru_cache
+
+from fastapi import FastAPI, Depends, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 
 from app.auth import get_api_key
-from app.rate_limiter import rate_limit
+from app.limiters import RateLimitDecision, RateLimiter, SlidingLogLimiter
+from app.redis_client import redis_client
 
-BASE_DIR = Path(__file__).resolve().parent.parent   
+BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
+
+RATE_LIMIT = 5
+WINDOW_SECONDS = 60
 
 app = FastAPI(title="Real-Time API Rate Limiter & Gateway")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@lru_cache
+def get_limiter() -> RateLimiter:
+    return SlidingLogLimiter(redis_client, limit=RATE_LIMIT, window_seconds=WINDOW_SECONDS)
+
+
+def rate_limit_headers(decision: RateLimitDecision) -> dict[str, str]:
+    return {
+        "X-RateLimit-Limit": str(decision.limit),
+        "X-RateLimit-Remaining": str(decision.remaining),
+        "X-RateLimit-Reset": str(decision.reset_at_seconds),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -27,13 +46,20 @@ def health():
 @app.get("/protected")
 def protected_route(
     response: Response,
-    user_id: str = Depends(get_api_key)
-):
-    rate_info = rate_limit(user_id, "protected")
+    user_id: str = Depends(get_api_key),
+    limiter: RateLimiter = Depends(get_limiter),
+) -> dict[str, str]:
+    decision = limiter.hit(f"{user_id}:protected")
+    headers = rate_limit_headers(decision)
 
-    response.headers["X-RateLimit-Limit"] = str(rate_info["limit"])
-    response.headers["X-RateLimit-Remaining"] = str(rate_info["remaining"])
-    response.headers["X-RateLimit-Reset"] = str(rate_info["reset"])
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded",
+            headers={**headers, "Retry-After": str(decision.retry_after_seconds)},
+        )
+
+    response.headers.update(headers)
 
     return {
         "message": "You accessed a protected resource",
