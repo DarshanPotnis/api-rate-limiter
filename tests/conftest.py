@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from typing import cast
 
 import pytest
 import redis
@@ -56,7 +57,7 @@ def token_window_has_room(redis_db: redis.Redis) -> None:
     Fixed-window tests expect all their requests to land in one window; this keeps a
     test from straddling a minute boundary on the Redis clock.
     """
-    seconds, microseconds = redis_db.time()
+    seconds, microseconds = cast(tuple[int, int], redis_db.time())
     left_ms = 60_000 - (seconds * 1000 + microseconds // 1000) % 60_000
     if left_ms < 2_000:
         time.sleep(left_ms / 1000 + 0.05)

@@ -21,14 +21,22 @@ def fresh_caches() -> Iterator[None]:
 
 def test_settings_are_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDIS_URL", "redis://cache.internal:6390/2")
+    monkeypatch.setenv("DEFAULT_MAX_TOKENS", "512")
+    monkeypatch.setenv("MOCK_LATENCY_SECONDS", "0.25")
 
     settings = Settings(_env_file=None)
 
     assert str(settings.redis_url) == "redis://cache.internal:6390/2"
+    assert settings.default_max_tokens == 512
+    assert settings.mock_latency_seconds == 0.25
 
 
-def test_invalid_settings_fail_at_startup(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REDIS_URL", "http://localhost:6379")
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("REDIS_URL", "http://localhost:6379"), ("DEFAULT_MAX_TOKENS", "0"), ("MOCK_LATENCY_SECONDS", "-1")],
+)
+def test_invalid_settings_fail_at_startup(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
+    monkeypatch.setenv(name, value)
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)

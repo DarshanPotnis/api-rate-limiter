@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from functools import lru_cache
 
 from fastapi import FastAPI, Depends, HTTPException, Response
@@ -6,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from pathlib import Path
 
 from app.auth import get_api_key
+from app.gateway.app import gateway
 from app.limiters import RateLimitDecision, RateLimiter, SlidingLogLimiter
 from app.redis_client import get_redis
 from app.tiers import LIMIT_WINDOW_SECONDS, Tier, tier_for
@@ -13,9 +16,18 @@ from app.tiers import LIMIT_WINDOW_SECONDS, Tier, tier_for
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="Real-Time API Rate Limiter & Gateway")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Starlette does not run the lifespans of mounted apps, so start the gateway's here.
+    async with gateway.router.lifespan_context(gateway):
+        yield
+
+
+app = FastAPI(title="Real-Time API Rate Limiter & Gateway", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/v1", gateway)
 
 
 @lru_cache

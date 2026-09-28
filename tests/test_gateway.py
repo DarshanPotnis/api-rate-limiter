@@ -1,7 +1,8 @@
 """Tests for the OpenAI-compatible gateway at /v1."""
 
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from functools import partial
+from typing import cast
 
 import anyio
 import httpx
@@ -52,7 +53,8 @@ def use_provider(provider: Provider) -> None:
 
 
 async def tokens_used(client: redis.asyncio.Redis, user_id: str) -> int:
-    return int(await client.hget(f"{KEY_PREFIX}:{user_id}", "used") or 0)
+    used = await cast(Awaitable[str | None], client.hget(f"{KEY_PREFIX}:{user_id}", "used"))
+    return int(used or 0)
 
 
 def chat(content: str = "hi", **fields: object) -> dict[str, object]:
@@ -63,8 +65,10 @@ def bearer(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
-async def completions(client: httpx.AsyncClient, body: dict[str, object], **kwargs: object) -> httpx.Response:
-    return await client.post("/v1/chat/completions", json=body, **kwargs)
+async def completions(
+    client: httpx.AsyncClient, body: Mapping[str, object], headers: Mapping[str, str] | None = None
+) -> httpx.Response:
+    return await client.post("/v1/chat/completions", json=body, headers=headers)
 
 
 @pytest.mark.parametrize(
@@ -193,6 +197,9 @@ async def test_a_cancelled_request_releases_the_reservation(
         tasks.start_soon(partial(completions, client, chat(max_tokens=50)))
         await started.wait()
         assert await tokens_used(async_redis_db, key) == 51
+        # Close the gateway's idle Redis connections so the release has to open a new one
+        # first: a real wait that the cancellation would interrupt if it were not shielded.
+        await gateway.state.resources.redis.connection_pool.disconnect()
         tasks.cancel_scope.cancel()
 
     assert await tokens_used(async_redis_db, key) == 0
@@ -249,7 +256,7 @@ async def test_max_completion_tokens_wins_and_256_is_the_default(
 ) -> None:
     as_caller(Tier("test", requests_per_minute=100, tokens_per_minute=200))
 
-    response = await completions(client, chat(**fields))
+    response = await completions(client, {**chat(), **fields})
 
     assert response.status_code == status_code
 

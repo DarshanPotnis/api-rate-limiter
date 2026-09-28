@@ -1,16 +1,18 @@
 """The official openai SDK, unmodified, used as the client to prove wire compatibility."""
 
 from collections.abc import Iterator
+from typing import Any, cast
 
 import openai
 import pytest
 from fastapi.testclient import TestClient
+from openai.types.chat import ChatCompletionMessageParam
 
 from app.main import app
 
 pytestmark = pytest.mark.usefixtures("token_window_has_room")
 
-MESSAGES = [{"role": "user", "content": "Hello there"}]
+MESSAGES: list[ChatCompletionMessageParam] = [{"role": "user", "content": "Hello there"}]
 
 
 @pytest.fixture
@@ -20,7 +22,10 @@ def http(app_uses_test_redis: None) -> Iterator[TestClient]:
 
 
 def sdk(http: TestClient, api_key: str = "free-tier-key") -> openai.OpenAI:
-    return openai.OpenAI(base_url="http://testserver/v1", api_key=api_key, http_client=http, max_retries=0)
+    # openai 3.x annotates http_client as an httpx2 client but also accepts a classic
+    # httpx.Client such as Starlette's TestClient, which is what routes calls in-process.
+    http_client = cast(Any, http)
+    return openai.OpenAI(base_url="http://testserver/v1", api_key=api_key, http_client=http_client, max_retries=0)
 
 
 def test_a_chat_completion_round_trips(http: TestClient) -> None:
