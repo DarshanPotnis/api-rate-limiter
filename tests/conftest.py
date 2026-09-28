@@ -22,7 +22,7 @@ def redis_db() -> Iterator[redis.Redis]:
     except redis.ConnectionError as exc:
         pytest.exit(
             f"Redis is not reachable at {TEST_REDIS_URL} ({exc}). "
-            "Start it with `docker-compose up -d` or set TEST_REDIS_URL.",
+            "Start it with `docker compose up -d` or set TEST_REDIS_URL.",
             returncode=1,
         )
     yield client

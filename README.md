@@ -134,13 +134,13 @@ pip install -r requirements.txt
 ### 4️⃣ Start Redis
 
 ```bash
-docker-compose up -d --wait
+docker compose up -d --wait
 ```
 
 If port 6379 is already taken, choose another host port and point the app at it:
 
 ```bash
-REDIS_PORT=6380 docker-compose up -d --wait
+REDIS_PORT=6380 docker compose up -d --wait
 export REDIS_URL=redis://localhost:6380/0
 ```
 
@@ -238,7 +238,7 @@ The tests need Redis and use database 15 by default, deleting only the keys they
 
 ```bash
 pip install -r requirements-dev.txt
-docker-compose up -d --wait
+docker compose up -d --wait
 pytest
 ```
 
