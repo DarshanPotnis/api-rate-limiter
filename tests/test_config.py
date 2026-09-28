@@ -39,9 +39,34 @@ def test_settings_are_read_from_the_environment(monkeypatch: pytest.MonkeyPatch)
     assert settings.mock_latency_seconds == 0.25
 
 
+@pytest.mark.usefixtures("no_dotenv")
+def test_ollama_defaults_and_the_auto_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+    settings = Settings()
+
+    assert str(settings.ollama_base_url) == "http://localhost:11434/"
+    assert (settings.ollama_connect_timeout_seconds, settings.ollama_read_timeout_seconds) == (2.0, 120.0)
+    assert settings.auto_chain == ("llama3.2:3b", "mock")
+
+
+@pytest.mark.usefixtures("no_dotenv")
+def test_auto_fallback_is_a_comma_separated_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTO_FALLBACK", "qwen3:4b, mock")
+
+    assert Settings().auto_chain == ("qwen3:4b", "mock")
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
-    [("REDIS_URL", "http://localhost:6379"), ("DEFAULT_MAX_TOKENS", "0"), ("MOCK_LATENCY_SECONDS", "-1")],
+    [
+        ("REDIS_URL", "http://localhost:6379"),
+        ("DEFAULT_MAX_TOKENS", "0"),
+        ("MOCK_LATENCY_SECONDS", "-1"),
+        ("OLLAMA_BASE_URL", "not a url"),
+        ("OLLAMA_MODEL", ""),
+        ("OLLAMA_READ_TIMEOUT_SECONDS", "0"),
+    ],
 )
 @pytest.mark.usefixtures("no_dotenv")
 def test_invalid_settings_fail_at_startup(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:

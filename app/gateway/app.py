@@ -1,14 +1,14 @@
 """The gateway's FastAPI app: POST /chat/completions and GET /models, mounted at /v1.
 
-Per request: authenticate, size the request (prompt estimate + max tokens), apply the
-tier's request limit, reserve tokens, call the provider, then settle the reservation
-against actual usage. If the provider fails or the request is cancelled, the
-reservation is released instead.
+Per request: authenticate, resolve the model to its targets, size the request (prompt
+estimate + max tokens), apply the tier's request limit, reserve tokens, try the targets
+in order, then settle the reservation against the usage of whichever model answered.
+If none answers or the request is cancelled, the reservation is released instead.
 """
 
 import secrets
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 
 import anyio
@@ -20,7 +20,8 @@ from app.config import get_settings
 from app.gateway.auth import Caller, get_caller
 from app.gateway.dependencies import (
     GatewayResources,
-    get_providers,
+    get_fallback,
+    get_registry,
     get_request_limiter,
     get_resources,
     get_token_budget,
@@ -37,25 +38,41 @@ from app.gateway.schemas import (
     Usage,
 )
 from app.limiters import AsyncRateLimiter
-from app.providers import Completion, CompletionRequest, Message, MockProvider, Provider, ProviderError
+from app.providers import CompletionRequest, Message, MockProvider, ProviderTimeout, ProviderUnavailable
+from app.providers.ollama import OllamaProvider, create_ollama_client
 from app.providers.tokens import estimate_prompt_tokens
+from app.routing import AllTargetsFailed, Answer, Attempt, FallbackStrategy, ModelRegistry, SequentialFallback, Target
 from app.tiers import LIMIT_WINDOW_SECONDS
+
+AUTO_ALIAS = "auto"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    client = redis.asyncio.Redis.from_url(str(settings.redis_url), decode_responses=True)
-    app.state.resources = GatewayResources(
-        redis=client,
-        token_budget=FixedWindowTokenBudget(client, window_seconds=LIMIT_WINDOW_SECONDS),
-        providers={"mock": MockProvider(latency_seconds=settings.mock_latency_seconds)},
-        started_at=int(time.time()),
-    )
-    try:
+    async with (
+        redis.asyncio.Redis.from_url(str(settings.redis_url), decode_responses=True) as redis_client,
+        create_ollama_client(
+            str(settings.ollama_base_url),
+            connect_timeout=settings.ollama_connect_timeout_seconds,
+            read_timeout=settings.ollama_read_timeout_seconds,
+        ) as ollama_client,
+    ):
+        registry = ModelRegistry(
+            models={
+                "mock": MockProvider(latency_seconds=settings.mock_latency_seconds),
+                settings.ollama_model: OllamaProvider(ollama_client),
+            },
+            aliases={AUTO_ALIAS: settings.auto_chain},
+        )
+        app.state.resources = GatewayResources(
+            redis=redis_client,
+            token_budget=FixedWindowTokenBudget(redis_client, window_seconds=LIMIT_WINDOW_SECONDS),
+            registry=registry,
+            fallback=SequentialFallback(),
+            started_at=int(time.time()),
+        )
         yield
-    finally:
-        await client.aclose()
 
 
 gateway = FastAPI(title="LLM Gateway", lifespan=lifespan)
@@ -64,10 +81,11 @@ install_error_handlers(gateway)
 
 @gateway.get("/models", dependencies=[Depends(get_caller)])
 async def list_models(
-    providers: Mapping[str, Provider] = Depends(get_providers),
+    registry: ModelRegistry = Depends(get_registry),
     resources: GatewayResources = Depends(get_resources),
 ) -> ModelList:
-    return ModelList(data=[Model(id=name, created=resources.started_at, owned_by="llm-gateway") for name in providers])
+    listed = await registry.available_models()
+    return ModelList(data=[Model(id=m.id, created=resources.started_at, owned_by=m.owned_by) for m in listed])
 
 
 @gateway.post("/chat/completions")
@@ -75,14 +93,15 @@ async def create_chat_completion(
     body: ChatCompletionRequest,
     response: Response,
     caller: Caller = Depends(get_caller),
-    providers: Mapping[str, Provider] = Depends(get_providers),
+    registry: ModelRegistry = Depends(get_registry),
+    fallback: FallbackStrategy = Depends(get_fallback),
     limiter: AsyncRateLimiter = Depends(get_request_limiter),
     budget: TokenBudget = Depends(get_token_budget),
 ) -> ChatCompletion:
     if body.stream:
         raise OpenAIError(400, "Streaming is not supported yet; send stream: false.", param="stream")
-    provider = providers.get(body.model)
-    if provider is None:
+    targets = registry.resolve(body.model)
+    if targets is None:
         raise OpenAIError(404, f"The model '{body.model}' does not exist.", code="model_not_found", param="model")
 
     request = CompletionRequest(
@@ -129,17 +148,22 @@ async def create_chat_completion(
             headers={**headers, **token_limit_headers(state), "retry-after": str(state.retry_after_seconds)},
         )
 
-    completion = await _complete_or_release(provider, request, budget, reservation)
-    # Shielded like the release: once the provider has answered, its real usage must be
+    answer = await _answer_or_release(
+        fallback, targets, request, budget, reservation, alias=registry.is_alias(body.model)
+    )
+    completion = answer.completion
+    # Shielded like the release: once a model has answered, its real usage must be
     # recorded even if this request is being cancelled.
     with anyio.CancelScope(shield=True):
         state = await budget.settle(reservation, completion.total_tokens)
 
-    response.headers.update({**headers, **token_limit_headers(state)})
+    response.headers.update(
+        {**headers, **token_limit_headers(state), "x-gateway-provider": answer.target.provider.name}
+    )
     return ChatCompletion(
         id=f"chatcmpl-{secrets.token_hex(12)}",
         created=int(time.time()),
-        model=request.model,
+        model=answer.target.model,
         choices=[
             Choice(
                 index=0,
@@ -164,21 +188,58 @@ def _max_tokens(body: ChatCompletionRequest) -> int:
     return get_settings().default_max_tokens
 
 
-async def _complete_or_release(
-    provider: Provider, request: CompletionRequest, budget: TokenBudget, reservation: Reservation
-) -> Completion:
-    """Call the provider. If it fails, or this request is cancelled, give the reserved tokens back."""
-    completed = False
+async def _answer_or_release(
+    fallback: FallbackStrategy,
+    targets: Sequence[Target],
+    request: CompletionRequest,
+    budget: TokenBudget,
+    reservation: Reservation,
+    *,
+    alias: bool,
+) -> Answer:
+    """Route the request. If no target answers, or this request is cancelled, give the reserved tokens back."""
+    answered = False
     try:
-        completion = await provider.complete(request)
-        completed = True
-        return completion
-    except ProviderError as exc:
-        raise OpenAIError(
-            502, "The model provider failed to complete the request.", error_type="server_error", code="provider_error"
-        ) from exc
+        answer = await fallback.complete(targets, request)
+        answered = True
+        return answer
+    except AllTargetsFailed as exc:
+        raise _routing_error(request.model, exc.attempts, alias=alias) from exc
     finally:
-        if not completed:
+        if not answered:
             # Shielded so the release still reaches Redis while the task is being cancelled.
             with anyio.CancelScope(shield=True):
                 await budget.release(reservation)
+
+
+def _routing_error(model: str, attempts: Sequence[Attempt], *, alias: bool) -> OpenAIError:
+    """503 for a model that is down, 504 for one that timed out, 502 when it answered badly
+    or when every model behind an alias failed."""
+    # A model that timed out will probably time out again. OpenAI SDKs retry 5xx twice by
+    # default, which could hold a client for three full read timeouts, so tell them not to.
+    headers = {"x-should-retry": "false"} if any(isinstance(a.error, ProviderTimeout) for a in attempts) else {}
+    if alias:
+        tried = "; ".join(f"{a.target.model} ({a.target.provider.name}): {a.error}" for a in attempts)
+        return OpenAIError(
+            502,
+            f"Every model behind '{model}' failed. {tried}",
+            error_type="server_error",
+            code="all_providers_failed",
+            headers=headers,
+        )
+    [attempt] = attempts
+    if isinstance(attempt.error, ProviderTimeout):
+        return OpenAIError(
+            504,
+            f"The model '{model}' did not answer in time.",
+            error_type="server_error",
+            code="provider_timeout",
+            headers=headers,
+        )
+    if isinstance(attempt.error, ProviderUnavailable):
+        return OpenAIError(
+            503, f"The model '{model}' is unavailable: {attempt.error}", error_type="server_error", code="model_unavailable"
+        )
+    return OpenAIError(
+        502, "The model provider failed to complete the request.", error_type="server_error", code="provider_error"
+    )

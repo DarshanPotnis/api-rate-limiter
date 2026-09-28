@@ -1,6 +1,5 @@
 """Gateway resources, created once per app lifetime, and the dependencies that hand them out."""
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import redis.asyncio
@@ -9,7 +8,7 @@ from fastapi import Depends, Request
 from app.budgets import TokenBudget
 from app.gateway.auth import Caller, get_caller
 from app.limiters import AsyncRateLimiter, AsyncSlidingLogLimiter
-from app.providers import Provider
+from app.routing import FallbackStrategy, ModelRegistry
 from app.tiers import LIMIT_WINDOW_SECONDS, Tier
 
 
@@ -17,7 +16,8 @@ from app.tiers import LIMIT_WINDOW_SECONDS, Tier
 class GatewayResources:
     redis: redis.asyncio.Redis
     token_budget: TokenBudget
-    providers: Mapping[str, Provider]
+    registry: ModelRegistry
+    fallback: FallbackStrategy
     started_at: int
     _request_limiters: dict[Tier, AsyncRateLimiter] = field(default_factory=dict, init=False)
 
@@ -36,8 +36,12 @@ async def get_resources(request: Request) -> GatewayResources:
     return resources
 
 
-async def get_providers(resources: GatewayResources = Depends(get_resources)) -> Mapping[str, Provider]:
-    return resources.providers
+async def get_registry(resources: GatewayResources = Depends(get_resources)) -> ModelRegistry:
+    return resources.registry
+
+
+async def get_fallback(resources: GatewayResources = Depends(get_resources)) -> FallbackStrategy:
+    return resources.fallback
 
 
 async def get_token_budget(resources: GatewayResources = Depends(get_resources)) -> TokenBudget:
