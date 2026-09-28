@@ -30,3 +30,9 @@ class RateLimiter(Protocol):
     def hit(self, key: str) -> RateLimitDecision:
         """Record an attempt for ``key`` and decide whether it is admitted."""
         ...
+
+
+class AsyncRateLimiter(Protocol):
+    async def hit(self, key: str) -> RateLimitDecision:
+        """Record an attempt for ``key`` and decide whether it is admitted."""
+        ...
