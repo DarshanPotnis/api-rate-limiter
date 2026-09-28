@@ -3,6 +3,7 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 
 import anyio
 import pytest
@@ -97,8 +98,8 @@ def test_denied_requests_do_not_use_up_the_window(redis_db: redis.Redis, key: st
 def test_idle_keys_expire_after_the_window(redis_db: redis.Redis, limiter: SlidingLogLimiter, key: str) -> None:
     limiter.hit(key)
 
-    [stored] = redis_db.keys(f"*{key}*")
-    assert 0 < redis_db.pttl(stored) <= 60_000
+    [stored] = cast(list[str], redis_db.keys(f"*{key}*"))
+    assert 0 < cast(int, redis_db.pttl(stored)) <= 60_000
 
 
 @pytest.mark.parametrize(("limit", "window_seconds"), [(0, 60), (5, 0), (5, 0.0004)])
