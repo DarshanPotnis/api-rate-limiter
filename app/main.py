@@ -6,14 +6,12 @@ from fastapi.responses import HTMLResponse
 from pathlib import Path
 
 from app.auth import get_api_key
+from app.config import get_settings
 from app.limiters import RateLimitDecision, RateLimiter, SlidingLogLimiter
-from app.redis_client import redis_client
+from app.redis_client import get_redis
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
-
-RATE_LIMIT = 5
-WINDOW_SECONDS = 60
 
 app = FastAPI(title="Real-Time API Rate Limiter & Gateway")
 
@@ -22,7 +20,12 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @lru_cache
 def get_limiter() -> RateLimiter:
-    return SlidingLogLimiter(redis_client, limit=RATE_LIMIT, window_seconds=WINDOW_SECONDS)
+    settings = get_settings()
+    return SlidingLogLimiter(
+        get_redis(),
+        limit=settings.rate_limit_requests,
+        window_seconds=settings.rate_limit_window_seconds,
+    )
 
 
 def rate_limit_headers(decision: RateLimitDecision) -> dict[str, str]:
