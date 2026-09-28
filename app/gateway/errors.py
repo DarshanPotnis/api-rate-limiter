@@ -37,6 +37,7 @@ def install_error_handlers(app: FastAPI) -> None:
     app.exception_handler(OpenAIError)(_handle_openai_error)
     app.exception_handler(RequestValidationError)(_handle_validation_error)
     app.exception_handler(StarletteHTTPException)(_handle_http_error)
+    app.exception_handler(Exception)(_handle_unexpected_error)
 
 
 async def _handle_openai_error(request: Request, exc: OpenAIError) -> JSONResponse:
@@ -54,6 +55,12 @@ async def _handle_validation_error(request: Request, exc: RequestValidationError
 
 async def _handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     return OpenAIError(exc.status_code, str(exc.detail), headers=exc.headers).to_response()
+
+
+async def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+    # Starlette re-raises the exception after sending this response, so the server still
+    # logs the traceback; the client gets a parseable error without internal details.
+    return OpenAIError(500, "The gateway hit an unexpected error.", error_type="server_error").to_response()
 
 
 def _param(location: Sequence[str | int]) -> str | None:
