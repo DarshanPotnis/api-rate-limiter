@@ -12,7 +12,8 @@ import redis.asyncio
 from app.budgets.fixed_window import KEY_PREFIX
 from app.gateway.app import gateway
 from app.gateway.auth import Caller, get_caller
-from app.gateway.dependencies import get_providers
+from app.budgets import TokenBudget
+from app.gateway.dependencies import get_providers, get_token_budget
 from app.main import app
 from app.providers import Completion, CompletionRequest, MockProvider, Provider, ProviderError
 from app.tiers import Tier
@@ -313,3 +314,26 @@ async def test_unknown_gateway_paths_use_the_openai_error_format(client: httpx.A
 
     assert response.status_code == 404
     assert response.json()["error"]["type"] == "invalid_request_error"
+
+
+async def test_an_unexpected_error_returns_an_openai_style_500(
+    app_uses_test_redis: None, as_caller: Callable[[Tier], None]
+) -> None:
+    def broken_budget() -> TokenBudget:
+        raise RuntimeError("redis exploded")
+
+    as_caller(TEST_TIER)
+    gateway.dependency_overrides[get_token_budget] = broken_budget
+
+    async with app.router.lifespan_context(app):
+        # The error is still raised after the response is sent, so the server logs it;
+        # this transport returns the response instead of re-raising it into the test.
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+            response = await completions(http, chat())
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {"message": "The gateway hit an unexpected error.", "type": "server_error", "param": None, "code": None}
+    }
+    assert "redis exploded" not in response.text
