@@ -4,10 +4,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import anyio
 import pytest
 import redis
+import redis.asyncio
 
-from app.limiters import SlidingLogLimiter
+from app.limiters import AsyncSlidingLogLimiter, SlidingLogLimiter
 
 LIMIT = 5
 
@@ -103,3 +105,32 @@ def test_idle_keys_expire_after_the_window(redis_db: redis.Redis, limiter: Slidi
 def test_rejects_invalid_configuration(redis_db: redis.Redis, limit: int, window_seconds: float) -> None:
     with pytest.raises(ValueError):
         SlidingLogLimiter(redis_db, limit=limit, window_seconds=window_seconds)
+
+
+@pytest.mark.anyio
+async def test_async_limiter_admits_exactly_limit_under_concurrency(
+    async_redis_db: redis.asyncio.Redis, key: str
+) -> None:
+    limiter = AsyncSlidingLogLimiter(async_redis_db, limit=LIMIT, window_seconds=60)
+    results: list[bool] = []
+
+    async def send() -> None:
+        results.append((await limiter.hit(key)).allowed)
+
+    async with anyio.create_task_group() as tasks:
+        for _ in range(20):
+            tasks.start_soon(send)
+
+    assert results.count(True) == LIMIT
+
+
+@pytest.mark.anyio
+async def test_async_and_sync_limiters_share_one_log(
+    redis_db: redis.Redis, async_redis_db: redis.asyncio.Redis, key: str
+) -> None:
+    sync_limiter = SlidingLogLimiter(redis_db, limit=2, window_seconds=60)
+    async_limiter = AsyncSlidingLogLimiter(async_redis_db, limit=2, window_seconds=60)
+
+    assert sync_limiter.hit(key).allowed
+    assert (await async_limiter.hit(key)).remaining == 0
+    assert not sync_limiter.hit(key).allowed

@@ -6,10 +6,11 @@ and each test deletes only the keys it created, so the app's data is never touch
 
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import redis
+import redis.asyncio
 
 from app.auth import VALID_API_KEYS
 from app.config import get_settings
@@ -32,6 +33,19 @@ def redis_db() -> Iterator[redis.Redis]:
         )
     yield client
     client.close()
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.fixture
+async def async_redis_db(redis_db: redis.Redis) -> AsyncIterator[redis.asyncio.Redis]:
+    """An asyncio client for the test database (``redis_db`` has already checked it is reachable)."""
+    client = redis.asyncio.Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+    yield client
+    await client.aclose()
 
 
 @pytest.fixture
