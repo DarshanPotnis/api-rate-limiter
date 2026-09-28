@@ -1,0 +1,13 @@
+services:
+  redis:
+    image: redis:7-alpine
+    # Override the host port when 6379 is already taken, e.g. REDIS_PORT=6380 docker compose up -d
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
