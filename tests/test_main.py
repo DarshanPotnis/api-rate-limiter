@@ -53,3 +53,25 @@ def test_unknown_api_key_is_rejected() -> None:
     response = TestClient(app).get("/protected", headers={"X-API-KEY": "not-a-real-key"})
 
     assert response.status_code == 401
+
+
+@pytest.mark.usefixtures("app_uses_test_redis")
+@pytest.mark.parametrize(
+    ("api_key", "limit"), [("free-tier-key", 5), ("pro-tier-key", 60), ("enterprise-key", 600)]
+)
+def test_each_tier_reports_its_own_request_limit(api_key: str, limit: int) -> None:
+    response = TestClient(app).get("/protected", headers={"X-API-KEY": api_key})
+
+    assert response.status_code == 200
+    assert response.headers["X-RateLimit-Limit"] == str(limit)
+
+
+@pytest.mark.usefixtures("app_uses_test_redis")
+def test_free_tier_is_limited_while_pro_is_not() -> None:
+    client = TestClient(app)
+
+    free = [client.get("/protected", headers={"X-API-KEY": "free-tier-key"}).status_code for _ in range(6)]
+    pro = [client.get("/protected", headers={"X-API-KEY": "pro-tier-key"}).status_code for _ in range(6)]
+
+    assert free == [200] * 5 + [429]
+    assert pro == [200] * 6

@@ -11,6 +11,11 @@ from collections.abc import Iterator
 import pytest
 import redis
 
+from app.auth import VALID_API_KEYS
+from app.config import get_settings
+from app.main import get_limiter
+from app.redis_client import get_redis
+
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
 
 
@@ -37,3 +42,29 @@ def key(redis_db: redis.Redis) -> Iterator[str]:
     created = list(redis_db.scan_iter(match=f"*{key}*"))
     if created:
         redis_db.delete(*created)
+
+
+def _clear_app_caches() -> None:
+    for cached in (get_settings, get_redis, get_limiter):
+        cached.cache_clear()
+
+
+def _delete_demo_user_keys(client: redis.Redis) -> None:
+    for user_id in VALID_API_KEYS.values():
+        created = list(client.scan_iter(match=f"*{user_id}*"))
+        if created:
+            client.delete(*created)
+
+
+@pytest.fixture
+def app_uses_test_redis(redis_db: redis.Redis, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Point the real app, with no dependency overrides, at the test database.
+
+    Requests then run as the built-in demo users, whose keys are removed before and after.
+    """
+    monkeypatch.setenv("REDIS_URL", TEST_REDIS_URL)
+    _clear_app_caches()
+    _delete_demo_user_keys(redis_db)
+    yield
+    _delete_demo_user_keys(redis_db)
+    _clear_app_caches()
