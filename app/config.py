@@ -1,7 +1,7 @@
 """Application settings, read from environment variables and an optional .env file."""
 
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, HttpUrl, NonNegativeFloat, PositiveFloat, PositiveInt, RedisDsn, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     redis_url: RedisDsn = RedisDsn("redis://localhost:6379/0")
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     default_max_tokens: PositiveInt = 256
     mock_latency_seconds: NonNegativeFloat = 0.0
 

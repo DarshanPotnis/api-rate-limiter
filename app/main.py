@@ -8,8 +8,10 @@ from fastapi.responses import HTMLResponse
 from pathlib import Path
 
 from app.auth import get_api_key
+from app.config import get_settings
 from app.gateway.app import gateway
 from app.limiters import RateLimitDecision, RateLimiter, SlidingLogLimiter
+from app.logging_setup import configure_logging
 from app.redis_client import get_redis
 from app.tiers import LIMIT_WINDOW_SECONDS, Tier, tier_for
 
@@ -19,6 +21,7 @@ STATIC_DIR = BASE_DIR / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    configure_logging(get_settings().log_level)
     # Starlette does not run the lifespans of mounted apps, so start the gateway's here.
     async with gateway.router.lifespan_context(gateway):
         yield
