@@ -40,7 +40,7 @@ Each optimized piece replaced a simple first version, measured by the tests:
 
 | Outcome | Before | After |
 |---------|-------:|------:|
-| Tokens let through by a burst at a window boundary (limit 100) | 200 | 110 |
+| Tokens let through by a burst right as the limit resets (limit 100) | 200 | 110 |
 | Estimated cost of a real 32-token prompt, after learning | 7 | 32 |
 | Tokens reserved for a 26-token request after a 20-message chat | 121 | 26 |
 | Wait on the 4th request while the model is hung | 311 ms | 11 ms |
