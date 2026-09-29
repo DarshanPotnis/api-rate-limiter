@@ -64,6 +64,9 @@ mypy app tests scripts
   is running with `OLLAMA_MODEL` pulled, and skips itself otherwise.
 - `tests/test_demo.py` runs `scripts/demo.py` in-process, so the demo cannot drift from the
   gateway.
+- `tests/test_console.py` holds the console to its rules: served with a same-origin
+  Content-Security-Policy, local assets only, labelled fields, and no `innerHTML` (or other
+  HTML-from-strings sinks) in its scripts.
 - Timing-sensitive tests compare against the Redis-clock timestamps the code returns, or
   against the other side of a comparison, rather than fixed millisecond bounds, so a slow
   CI runner does not fail them.

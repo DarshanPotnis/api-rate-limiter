@@ -47,12 +47,17 @@ Each optimized piece replaced a simple first version, measured by the tests:
 
 Full timings and the command that reproduces them: [docs/results.md](docs/results.md).
 
+The console at `http://localhost:8000` shows the same limits live: send requests as any
+tier, fire a burst, watch the token bucket refill, and see a model's circuit breaker open.
+
+![The gateway console after a burst on the free tier, with the Ollama model's breaker open](docs/console.png)
+
 ## Quickstart
 
 ```bash
 git clone https://github.com/DarshanPotnis/llm-gateway.git
 cd llm-gateway
-docker compose up -d --wait        # Redis and the gateway on http://localhost:8000
+docker compose up -d --wait        # Redis and the gateway; open http://localhost:8000 for the console
 ```
 
 ```python
@@ -121,7 +126,7 @@ cooldown, and routing never waits on Redis, so the breaker keeps working when Re
 
 ## Documentation
 
-- [API reference](docs/api.md): endpoints, headers and every error code
+- [API reference](docs/api.md): endpoints, headers, every error code, the console and `/status`
 - [Configuration](docs/configuration.md): all settings, tiers and keys
 - [Development](docs/development.md): running without Docker, Ollama, tests, recording the demo
 - [Results](docs/results.md): full timings and how to reproduce them
