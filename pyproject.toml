@@ -16,3 +16,7 @@ target-version = "py313"
 select = ["E", "F", "I", "B", "UP"]
 # B008 flags calls in argument defaults, which is how FastAPI declares dependencies (Depends(...)).
 ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+# scripts/ and tests/ are namespace packages, which ruff cannot recognise as our own on its own.
+known-first-party = ["app", "scripts", "tests"]
