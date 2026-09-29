@@ -48,6 +48,9 @@ class Provider(Protocol):
     name: str
     """Short backend name reported to clients, such as "mock" or "ollama"."""
 
+    reports_real_usage: bool
+    """Whether usage comes from the model's own tokenizer, rather than from our estimate."""
+
     async def complete(self, request: CompletionRequest) -> Completion:
         """Generate one reply of at most ``request.max_tokens`` tokens. Raises ``ProviderError``."""
         ...

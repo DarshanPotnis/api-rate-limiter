@@ -59,6 +59,7 @@ def _with_tag(model: str) -> str:
 
 class OllamaProvider:
     name = "ollama"
+    reports_real_usage = True
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client

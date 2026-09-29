@@ -53,6 +53,7 @@ def as_caller(key: str) -> Callable[[Tier], None]:
 
 class FailingProvider:
     name = "failing"
+    reports_real_usage = False
 
     async def complete(self, request: CompletionRequest) -> Completion:
         raise ProviderError("backend unavailable")
@@ -207,6 +208,7 @@ async def test_a_cancelled_request_releases_the_reservation(
 
     class SlowProvider:
         name = "slow"
+        reports_real_usage = False
 
         async def complete(self, request: CompletionRequest) -> Completion:
             started.set()
