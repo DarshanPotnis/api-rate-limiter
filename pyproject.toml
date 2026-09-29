@@ -5,3 +5,14 @@ addopts = "-ra"
 
 [tool.mypy]
 explicit_package_bases = true
+
+[tool.ruff]
+line-length = 120
+# The app runs on 3.14, but 3.13 syntax keeps parentheses around multi-exception except
+# clauses; PEP 758's bare "except A, B:" reads like Python 2's "except A, name:".
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+# B008 flags calls in argument defaults, which is how FastAPI declares dependencies (Depends(...)).
+ignore = ["B008"]
