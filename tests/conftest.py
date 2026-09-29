@@ -17,8 +17,6 @@ import redis.asyncio
 from app.auth import VALID_API_KEYS
 from app.config import get_settings
 from app.estimates.calibrated import KEY_PREFIX as OVERHEAD_KEY_PREFIX
-from app.main import limiter_for_tier
-from app.redis_client import get_redis
 
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
 UNREACHABLE_OLLAMA_URL = "http://127.0.0.1:9"  # nothing listens on the discard port
@@ -85,8 +83,7 @@ def key(redis_db: redis.Redis) -> Iterator[str]:
 
 
 def _clear_app_caches() -> None:
-    for cached in (get_settings, get_redis, limiter_for_tier):
-        cached.cache_clear()
+    get_settings.cache_clear()
 
 
 def _delete_app_keys(client: redis.Redis) -> None:

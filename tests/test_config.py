@@ -1,23 +1,11 @@
-"""Tests for environment-driven settings and the lazily created Redis client."""
+"""Tests for environment-driven settings."""
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import redis
 from pydantic import ValidationError
 
-from app.config import Settings, get_settings
-from app.redis_client import get_redis
-
-
-@pytest.fixture
-def fresh_caches() -> Iterator[None]:
-    get_settings.cache_clear()
-    get_redis.cache_clear()
-    yield
-    get_settings.cache_clear()
-    get_redis.cache_clear()
+from app.config import Settings
 
 
 @pytest.fixture
@@ -95,14 +83,3 @@ def test_invalid_settings_fail_at_startup(monkeypatch: pytest.MonkeyPatch, name:
 
     with pytest.raises(ValidationError):
         Settings()
-
-
-@pytest.mark.usefixtures("fresh_caches")
-def test_redis_client_does_not_connect_until_first_command(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:1/0")  # nothing listens on port 1
-
-    client = get_redis()
-
-    assert client is get_redis()
-    with pytest.raises(redis.ConnectionError):
-        client.ping()
