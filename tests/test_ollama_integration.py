@@ -16,6 +16,8 @@ from app.config import get_settings
 from app.gateway.app import gateway
 from app.gateway.auth import Caller, get_caller
 from app.main import app
+from app.providers import Message
+from app.providers.tokens import estimate_prompt_tokens
 from app.tiers import Tier
 
 # Read at import, before the autouse no_real_ollama fixture points the app elsewhere.
@@ -100,3 +102,27 @@ def test_models_lists_the_real_ollama_model(http: TestClient) -> None:
     response = http.get("/v1/models", headers=PRO)
 
     assert [model["id"] for model in response.json()["data"]] == ["mock", OLLAMA_MODEL, "auto"]
+
+
+def test_the_calibrated_estimate_lands_close_to_real_usage(http: TestClient) -> None:
+    resources = gateway.state.resources
+    targets = resources.registry.resolve(OLLAMA_MODEL)
+    portal = http.portal
+    assert portal is not None and targets is not None
+    planet = (Message("user", "Name one planet. One word."),)
+
+    characters = estimate_prompt_tokens(planet)
+    before_learning = portal.call(resources.estimator.estimate, targets, planet)
+    learner = {"model": OLLAMA_MODEL, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+    assert http.post("/v1/chat/completions", headers=PRO, json=learner).status_code == 200
+    calibrated = portal.call(resources.estimator.estimate, targets, planet)
+    body = {"model": OLLAMA_MODEL, "messages": [{"role": "user", "content": planet[0].content}], "max_tokens": 1}
+    real = http.post("/v1/chat/completions", headers=PRO, json=body).json()["usage"]["prompt_tokens"]
+
+    print(
+        f"\nprompt tokens for {planet[0].content!r}: real {real}; characters / 4 estimated {characters} "
+        f"({real / characters:.1f}x too low); calibrated estimated {before_learning} before any real count "
+        f"and {calibrated} after learning from one different prompt"
+    )
+    assert characters * 3 < real
+    assert real <= calibrated <= math.ceil(real * 1.1)
