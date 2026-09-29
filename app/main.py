@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.auth import get_api_key
@@ -18,6 +18,22 @@ from app.tiers import LIMIT_WINDOW_SECONDS, Tier, tier_for
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
+
+# The console loads only its own files and talks only to this gateway, so nothing else is
+# allowed; this also keeps it working offline.
+CONSOLE_CSP = "; ".join(
+    [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "connect-src 'self'",
+        "img-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-ancestors 'none'",
+    ]
+)
 
 
 @asynccontextmanager
@@ -52,9 +68,9 @@ def rate_limit_headers(decision: RateLimitDecision) -> dict[str, str]:
     }
 
 
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return (STATIC_DIR / "index.html").read_text()
+@app.get("/", response_class=FileResponse)
+def console() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html", headers={"Content-Security-Policy": CONSOLE_CSP})
 
 
 @app.get("/health")
