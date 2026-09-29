@@ -178,12 +178,19 @@ function recordLimits(key, headers, receivedAt) {
   const requestLimit = numberHeader(headers, "x-ratelimit-limit-requests");
   const requestsLeft = numberHeader(headers, "x-ratelimit-remaining-requests");
   if (requestLimit !== null && requestsLeft !== null) {
-    const nextSlotMs = parseDuration(headers.get("x-ratelimit-reset-requests"));
-    entry.requests = {
-      limit: requestLimit,
-      remaining: requestsLeft,
-      nextSlotAt: nextSlotMs === null ? null : receivedAt + nextSlotMs,
-    };
+    // Responses to a burst arrive out of order: a success decided while slots were left can
+    // arrive after the 429s decided later. The count can only rise once the oldest request
+    // leaves the window, so a response reporting more slots left is stale until then.
+    const current = entry.requests;
+    const slotFreed = current?.nextSlotAt != null && receivedAt >= current.nextSlotAt;
+    if (!current || requestsLeft <= current.remaining || slotFreed) {
+      const nextSlotMs = parseDuration(headers.get("x-ratelimit-reset-requests"));
+      entry.requests = {
+        limit: requestLimit,
+        remaining: requestsLeft,
+        nextSlotAt: nextSlotMs === null ? null : receivedAt + nextSlotMs,
+      };
+    }
   }
 
   const tokenLimit = numberHeader(headers, "x-ratelimit-limit-tokens");
