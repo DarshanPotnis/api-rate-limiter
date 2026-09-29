@@ -9,15 +9,13 @@ from fastapi.testclient import TestClient
 from app.gateway.app import gateway as gateway_app
 from app.gateway.dependencies import get_registry
 from app.main import app
-from app.providers import MockProvider
+from app.providers import MockProvider, Provider
 from app.routing import ModelRegistry
 from scripts import demo
 from tests.fake_ollama import OLLAMA_MODEL, ollama_provider, ollama_up
 
 RATE_LIMIT_HEADERS = {
-    f"x-ratelimit-{kind}-{resource}"
-    for kind in ("limit", "remaining", "reset")
-    for resource in ("requests", "tokens")
+    f"x-ratelimit-{kind}-{resource}" for kind in ("limit", "remaining", "reset") for resource in ("requests", "tokens")
 }
 
 
@@ -78,7 +76,7 @@ def test_with_ollama_off_each_step_shows_its_limit(
 def test_with_ollama_up_the_demo_says_ollama_answered(
     gateway: demo.Gateway, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    models = {"mock": MockProvider(), OLLAMA_MODEL: ollama_provider(ollama_up())}
+    models: dict[str, Provider] = {"mock": MockProvider(), OLLAMA_MODEL: ollama_provider(ollama_up())}
     registry = ModelRegistry(models=models, aliases={"auto": [OLLAMA_MODEL, "mock"]})
     gateway_app.dependency_overrides[get_registry] = lambda: registry
 
