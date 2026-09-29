@@ -1,7 +1,8 @@
 """Tests for how /protected reports rate-limit decisions over HTTP."""
 
-import time
+import math
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
 import redis
@@ -15,6 +16,12 @@ LIMIT = 2
 WINDOW_SECONDS = 60
 
 
+def _redis_now_ms(client: redis.Redis) -> int:
+    """Redis server time in ms, truncated the way the limiter's Lua script truncates it."""
+    seconds, microseconds = cast(tuple[int, int], client.time())
+    return seconds * 1000 + microseconds // 1000
+
+
 @pytest.fixture
 def client(redis_db: redis.Redis, key: str) -> Iterator[TestClient]:
     """A client authenticated as a user unique to this test, limited in the test database."""
@@ -25,15 +32,20 @@ def client(redis_db: redis.Redis, key: str) -> Iterator[TestClient]:
     app.dependency_overrides.clear()
 
 
-def test_admitted_request_reports_rate_limit_headers(client: TestClient, key: str) -> None:
-    before = time.time()
+def test_admitted_request_reports_rate_limit_headers(client: TestClient, key: str, redis_db: redis.Redis) -> None:
+    # The reset time comes from the Redis clock, which can run ahead of this machine's clock
+    # (Redis runs in a VM), so bound it by Redis time read around the request.
+    before_ms = _redis_now_ms(redis_db)
     response = client.get("/protected")
+    after_ms = _redis_now_ms(redis_db)
 
     assert response.status_code == 200
     assert response.json() == {"message": "You accessed a protected resource", "user": key}
     assert response.headers["X-RateLimit-Limit"] == str(LIMIT)
     assert response.headers["X-RateLimit-Remaining"] == str(LIMIT - 1)
-    assert before < int(response.headers["X-RateLimit-Reset"]) <= before + WINDOW_SECONDS + 1
+    window_ms = WINDOW_SECONDS * 1000
+    reset = int(response.headers["X-RateLimit-Reset"])
+    assert math.ceil((before_ms + window_ms) / 1000) <= reset <= math.ceil((after_ms + window_ms) / 1000)
     assert "Retry-After" not in response.headers
 
 
