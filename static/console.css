@@ -103,10 +103,12 @@ h2 {
 @media (min-width: 960px) {
   .layout {
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    /* The playground spans two rows; the first fits the limits panel, the second takes the rest. */
+    grid-template-rows: auto 1fr auto auto;
     grid-template-areas:
       "playground limits"
       "playground health"
-      "burst health"
+      "burst burst"
       "log log";
   }
 }
@@ -371,9 +373,23 @@ td:first-child {
 .state.half_open { color: var(--warn); }
 .state.none { color: var(--muted); }
 
+/* The same colors as the burst chips. */
 .status-ok { color: var(--ok); }
+.status-requests { color: var(--warn); }
+.status-tokens,
 .status-error { color: var(--err); }
-.status-limited { color: var(--warn); }
+
+/* On a phone, the log keeps time, answer, status and tokens; tier, model and latency hide. */
+@media (max-width: 600px) {
+  .log th:nth-child(2),
+  .log td:nth-child(2),
+  .log th:nth-child(3),
+  .log td:nth-child(3),
+  .log th:nth-child(6),
+  .log td:nth-child(6) {
+    display: none;
+  }
+}
 
 .health .gauge-note,
 .log .gauge-note {

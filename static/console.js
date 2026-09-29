@@ -437,7 +437,7 @@ function addToLog(outcome) {
     tokens: outcome.ok && outcome.json.usage ? formatCount(outcome.json.usage.total_tokens) : "–",
   });
   log.length = Math.min(log.length, LOG_SIZE);
-  const statusClass = { ok: "status-ok", requests: "status-limited", tokens: "status-limited", error: "status-error" };
+  const statusClass = { ok: "status-ok", requests: "status-requests", tokens: "status-tokens", error: "status-error" };
   $("log-rows").replaceChildren(
     ...log.map((entry) =>
       el(

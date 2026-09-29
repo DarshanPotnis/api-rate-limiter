@@ -21,15 +21,15 @@
     <section class="panel playground" aria-labelledby="playground-title">
       <h2 id="playground-title">Playground</h2>
       <form id="request-form">
+        <div class="field">
+          <label for="tier">Tier</label>
+          <select id="tier" name="tier">
+            <option value="free-tier-key" data-name="Free" selected>Free: 5 requests, 2,000 tokens a minute</option>
+            <option value="pro-tier-key" data-name="Pro">Pro: 60 requests, 40,000 tokens a minute</option>
+            <option value="enterprise-key" data-name="Enterprise">Enterprise: 600 requests, 400,000 tokens a minute</option>
+          </select>
+        </div>
         <div class="row">
-          <div class="field">
-            <label for="tier">Tier</label>
-            <select id="tier" name="tier">
-              <option value="free-tier-key" data-name="Free" selected>Free: 5 requests, 2,000 tokens a minute</option>
-              <option value="pro-tier-key" data-name="Pro">Pro: 60 requests, 40,000 tokens a minute</option>
-              <option value="enterprise-key" data-name="Enterprise">Enterprise: 600 requests, 400,000 tokens a minute</option>
-            </select>
-          </div>
           <div class="field">
             <label for="model">Model</label>
             <select id="model" name="model">
