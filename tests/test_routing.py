@@ -4,29 +4,11 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
-from app.providers import Completion, CompletionRequest, Message, Provider, ProviderError, ProviderUnavailable
+from app.providers import CompletionRequest, Message, Provider, ProviderError, ProviderUnavailable
 from app.routing import AllTargetsFailed, ListedModel, ModelRegistry, SequentialFallback, Target
+from tests.stubs import StubProvider
 
 REQUEST = CompletionRequest(model="auto", messages=(Message("user", "hi"),), max_tokens=8)
-
-
-class StubProvider:
-    """Answers with a fixed reply or raises a fixed error, and records which models it was asked for."""
-
-    def __init__(self, name: str, *, error: Exception | None = None, available: bool = True) -> None:
-        self.name = name
-        self.error = error
-        self.available = available
-        self.calls: list[str] = []
-
-    async def complete(self, request: CompletionRequest) -> Completion:
-        self.calls.append(request.model)
-        if self.error is not None:
-            raise self.error
-        return Completion(content=f"{self.name} reply", finish_reason="stop", prompt_tokens=1, completion_tokens=1)
-
-    async def is_available(self, model: str) -> bool:
-        return self.available
 
 
 def _registry(local: StubProvider, mock: StubProvider) -> ModelRegistry:
