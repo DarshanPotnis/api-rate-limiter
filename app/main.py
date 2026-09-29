@@ -13,6 +13,7 @@ from app.gateway.app import gateway
 from app.limiters import RateLimitDecision, RateLimiter, SlidingLogLimiter
 from app.logging_setup import configure_logging
 from app.redis_client import get_redis
+from app.status import router as status_router
 from app.tiers import LIMIT_WINDOW_SECONDS, Tier, tier_for
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -31,6 +32,7 @@ app = FastAPI(title="Real-Time API Rate Limiter & Gateway", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/v1", gateway)
+app.include_router(status_router)
 
 
 @lru_cache

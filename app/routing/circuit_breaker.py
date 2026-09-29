@@ -11,6 +11,7 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from app.providers import CompletionRequest, ProviderError, ProviderTimeout, ProviderUnavailable
 from app.routing.fallback import AllTargetsFailed, Answer, Attempt
@@ -25,6 +26,18 @@ class CircuitOpen(ProviderUnavailable):
     def __init__(self, model: str, retry_after_seconds: float) -> None:
         super().__init__(f"{model} is failing, so the gateway is not trying it for {retry_after_seconds:.0f}s")
         self.retry_after_seconds = retry_after_seconds
+
+
+BreakerState = Literal["closed", "open", "half_open"]
+
+
+@dataclass(frozen=True, slots=True)
+class BreakerStatus:
+    """A read-only snapshot of one target's breaker."""
+
+    state: BreakerState
+    consecutive_failures: int
+    cooldown_remaining_seconds: float
 
 
 @dataclass
@@ -82,6 +95,19 @@ class CircuitBreakerFallback:
             self._reachable(target.model, breaker)
             return Answer(target, completion)
         raise AllTargetsFailed(attempts)
+
+    def status(self, model: str) -> BreakerStatus:
+        """The breaker's state for ``model``, without changing it. Half-open means the
+        cooldown has passed and the next request, or the one in flight, is the trial."""
+        breaker = self._breakers.get(model)
+        if breaker is None:
+            return BreakerStatus("closed", 0, 0.0)
+        if breaker.open_until is None:
+            return BreakerStatus("closed", breaker.failures, 0.0)
+        remaining = breaker.open_until - self._clock()
+        if remaining > 0:
+            return BreakerStatus("open", breaker.failures, remaining)
+        return BreakerStatus("half_open", breaker.failures, 0.0)
 
     def _skip(self, model: str, breaker: _Breaker) -> CircuitOpen | None:
         if breaker.open_until is None:

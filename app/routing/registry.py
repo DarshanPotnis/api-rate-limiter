@@ -47,6 +47,10 @@ class ModelRegistry:
             return tuple(Target(model, self._models[model]) for model in self._aliases[name])
         return None
 
+    def targets(self) -> tuple[Target, ...]:
+        """Every configured model, in configuration order; aliases are not included."""
+        return tuple(Target(name, provider) for name, provider in self._models.items())
+
     def is_alias(self, name: str) -> bool:
         return name in self._aliases
 

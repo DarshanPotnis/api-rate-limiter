@@ -11,7 +11,7 @@ from app.providers import (
     ProviderTimeout,
     ProviderUnavailable,
 )
-from app.routing import AllTargetsFailed, Answer, CircuitBreakerFallback, CircuitOpen, Target
+from app.routing import AllTargetsFailed, Answer, BreakerStatus, CircuitBreakerFallback, CircuitOpen, Target
 from tests.stubs import StubProvider
 
 pytestmark = pytest.mark.anyio
@@ -232,3 +232,26 @@ async def test_unexpected_errors_propagate_and_do_not_count(breaker: CircuitBrea
 def test_rejects_invalid_settings(threshold: int, cooldown: float) -> None:
     with pytest.raises(ValueError):
         CircuitBreakerFallback(failure_threshold=threshold, cooldown_seconds=cooldown)
+
+
+async def test_status_reports_each_state_without_changing_it(breaker: CircuitBreakerFallback, clock: FakeClock) -> None:
+    gated = GatedProvider()
+    target = Target("local", gated)
+    assert breaker.status("local") == BreakerStatus("closed", 0, 0.0)
+
+    await _open(breaker, target)
+    assert breaker.status("local") == BreakerStatus("open", THRESHOLD, COOLDOWN)
+    clock.now += 10
+    assert breaker.status("local") == BreakerStatus("open", THRESHOLD, COOLDOWN - 10)
+
+    clock.now += COOLDOWN
+    assert breaker.status("local").state == "half_open"
+    gated.error = None
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(breaker.complete, [target], REQUEST)
+        await gated.started.wait()
+        assert breaker.status("local").state == "half_open"  # while the trial is in flight
+        gated.release.set()
+
+    assert breaker.status("local") == BreakerStatus("closed", 0, 0.0)
+    assert gated.calls == THRESHOLD + 1  # reading the status never let a request through
