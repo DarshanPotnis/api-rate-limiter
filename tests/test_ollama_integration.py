@@ -57,7 +57,11 @@ def http(app_uses_test_redis: None, monkeypatch: pytest.MonkeyPatch) -> Iterator
 
 
 def _chat(model: str, max_tokens: int) -> dict[str, object]:
-    return {"model": model, "messages": [{"role": "user", "content": "Reply with one word: pong"}], "max_tokens": max_tokens}
+    return {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with one word: pong"}],
+        "max_tokens": max_tokens,
+    }
 
 
 def test_a_real_completion_is_settled_with_ollamas_own_counts(

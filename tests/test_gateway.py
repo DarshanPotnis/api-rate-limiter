@@ -498,7 +498,12 @@ async def test_an_unexpected_error_returns_an_openai_style_500(
 
     assert response.status_code == 500
     assert response.json() == {
-        "error": {"message": "The gateway hit an unexpected error.", "type": "server_error", "param": None, "code": None}
+        "error": {
+            "message": "The gateway hit an unexpected error.",
+            "type": "server_error",
+            "param": None,
+            "code": None,
+        }
     }
     assert "redis exploded" not in response.text
 
