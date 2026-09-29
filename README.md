@@ -22,9 +22,11 @@ It also serves an **OpenAI-compatible LLM gateway** at `/v1` that enforces per-t
   - Enterprise Tier
 - 🤖 **OpenAI-compatible LLM Gateway** (`/v1/chat/completions`, `/v1/models`)
   - Per-tier requests-per-minute and tokens-per-minute limits
-  - Token reservations settled against actual usage
+  - Token reservations settled against actual usage, in a continuously refilling token bucket
+  - Prompt estimates calibrated per model from real token counts
   - OpenAI-style `x-ratelimit-*` headers and error format
   - A local model through Ollama, with an `auto` alias that falls back to the mock model
+  - A circuit breaker that stops waiting on a backend that keeps failing
 - ⚡ **FastAPI + Uvicorn**
 - 🧱 Clean, modular backend architecture
 
@@ -79,8 +81,13 @@ api-rate-limiter/
 │   │       └── sliding_log.lua  # Atomic check-and-record in Redis
 │   ├── budgets/
 │   │   ├── base.py        # TokenBudget protocol, Reservation, BudgetState
-│   │   ├── fixed_window.py # Per-minute token budget
+│   │   ├── token_bucket.py # Continuously refilling budget (default)
+│   │   ├── fixed_window.py # Per-minute budget (brute force)
 │   │   └── scripts/       # Atomic reserve and settle Lua scripts
+│   ├── estimates/
+│   │   ├── calibrated.py  # Learned per-model prompt overhead (default)
+│   │   ├── characters.py  # Characters / 4 (brute force)
+│   │   └── scripts/       # Atomic learning Lua script
 │   ├── providers/
 │   │   ├── base.py        # Provider protocol
 │   │   ├── mock.py        # Deterministic mock LLM
@@ -88,7 +95,8 @@ api-rate-limiter/
 │   │   └── tokens.py      # Characters / 4 token estimate
 │   ├── routing/
 │   │   ├── registry.py    # Model names and aliases -> providers
-│   │   └── fallback.py    # FallbackStrategy protocol; sequential brute-force version
+│   │   ├── fallback.py    # FallbackStrategy protocol; sequential version (brute force)
+│   │   └── circuit_breaker.py # Skips failing targets for a cooldown (default)
 │   └── gateway/           # OpenAI-compatible /v1 app: schemas, errors, auth, headers
 │
 ├── tests/                 # pytest suite (needs Redis)
@@ -201,6 +209,13 @@ Settings come from environment variables or a `.env` file (see `.env.example`):
 | `OLLAMA_READ_TIMEOUT_SECONDS` | `120` | Time allowed for the reply, covering a cold model load plus generation |
 | `AUTO_FALLBACK` | `OLLAMA_MODEL,mock` | Comma-separated models the `auto` alias tries, in order |
 | `LOG_LEVEL` | `INFO` | Level of the app's own logs |
+| `PROMPT_ESTIMATE` | `calibrated` | `calibrated`, or `characters` for the plain characters ÷ 4 |
+| `PROMPT_OVERHEAD_DEFAULT` | `32` | Base prompt overhead assumed for a model until its first real count |
+| `PER_MESSAGE_TOKENS` | `5` | Template tokens added for each message after the first |
+| `TOKEN_BUDGET` | `token_bucket` | `token_bucket`, or `fixed_window` for per-minute windows |
+| `FALLBACK_STRATEGY` | `circuit_breaker` | `circuit_breaker`, or `sequential` to try every model on every request |
+| `BREAKER_FAILURE_THRESHOLD` | `3` | Consecutive failures (unavailable or timed out) that open a model's breaker |
+| `BREAKER_COOLDOWN_SECONDS` | `30` | How long an open breaker skips the model before one trial request |
 
 ```bash
 cp .env.example .env
@@ -321,12 +336,12 @@ curl -i http://127.0.0.1:8000/v1/chat/completions \
 
 ### How a request is limited
 
-1. **Size it**: the prompt estimate (characters in all messages ÷ 4, rounded up) plus `max_completion_tokens`, else `max_tokens`, else `DEFAULT_MAX_TOKENS`.
+1. **Size it**: the prompt estimate plus `max_completion_tokens`, else `max_tokens`, else `DEFAULT_MAX_TOKENS`. For a model that reports real token counts (Ollama), the estimate is characters ÷ 4 + the model's learned base overhead + `PER_MESSAGE_TOKENS` for each message after the first; `auto` reserves for its most expensive model. Mock keeps the exact characters ÷ 4.
 2. **Reject what can never fit**: if that is more than the tier's tokens per minute, return `400 request_too_large` without using any quota.
 3. **Request limit**: the tier's requests per minute, enforced by the same sliding-log Lua script as `/protected`. Over it: `429` with `type: requests`.
-4. **Reserve tokens**: a Lua script adds the reservation to the caller's count for the current minute (on the Redis clock) only if it fits. Otherwise: `429` with `type: tokens` and `Retry-After` until the minute ends.
-5. **Route it**: a named model is tried alone; `auto` tries its models in order until one answers. If none does, or the request is cancelled, the whole reservation is released. The release runs in a shielded cancel scope so it completes even while the request is being cancelled.
-6. **Settle**: the reservation is replaced by the usage of the model that answered, in the minute it was made in. For Ollama that is its own `prompt_eval_count` and `eval_count`. Unused tokens are refunded; extra tokens are charged.
+4. **Reserve tokens**: the caller's token bucket holds up to the tier's tokens per minute and refills continuously, computed in Lua from the Redis clock. The reservation is taken only if the balance covers it. Otherwise: `429` with `type: tokens` and `Retry-After` set to when the balance will cover this request.
+5. **Route it**: a named model is tried alone; `auto` tries its models in order until one answers, skipping any whose circuit breaker is open. If none answers, or the request is cancelled, the whole reservation is released. The release runs in a shielded cancel scope so it completes even while the request is being cancelled.
+6. **Settle and learn**: the reservation is replaced by the usage of the model that answered. For Ollama that is its own `prompt_eval_count` and `eval_count`. Unused tokens are refunded (never past a full bucket); extra tokens are charged, and can leave a debt that refill pays back. Ollama's prompt count then updates that model's learned overhead.
 
 The gateway talks to Redis through `redis.asyncio`, so rate limiting never blocks the event loop while other requests wait on the model.
 
@@ -339,11 +354,11 @@ x-ratelimit-limit-requests: 60
 x-ratelimit-remaining-requests: 59
 x-ratelimit-reset-requests: 1m0s
 x-ratelimit-limit-tokens: 40000
-x-ratelimit-remaining-tokens: 39986
-x-ratelimit-reset-tokens: 33.023s
+x-ratelimit-remaining-tokens: 39965
+x-ratelimit-reset-tokens: 53ms
 ```
 
-Remaining tokens are measured after settlement. Every `429` includes `Retry-After` in seconds. A request-limit `429` leaves out the remaining and reset token headers, because the token budget is not checked for that request.
+Remaining tokens are measured after settlement, and `x-ratelimit-reset-tokens` is the time until the bucket is full again. Every `429` includes `Retry-After` in seconds. A request-limit `429` leaves out the remaining and reset token headers, because the token budget is not checked for that request.
 
 ### Errors
 
@@ -358,25 +373,38 @@ Errors use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`, so
 | 429 | `requests` or `tokens` | `rate_limit_exceeded` | Request or token limit reached |
 | 500 | `server_error` | | An unexpected error inside the gateway |
 | 502 | `server_error` | `provider_error` | The named model answered with an error or an unreadable reply |
-| 502 | `server_error` | `all_providers_failed` | Every model behind `auto` failed; the message lists each attempt |
-| 503 | `server_error` | `model_unavailable` | The named model is down, or not pulled in Ollama |
+| 502 | `server_error` | `all_providers_failed` | Every model behind `auto` failed or was skipped; the message lists each attempt |
+| 503 | `server_error` | `model_unavailable` | The named model is down, not pulled in Ollama, or its circuit breaker is open |
 | 504 | `server_error` | `provider_timeout` | The named model did not answer within the read timeout |
 
 A `503` means the backend is temporarily unavailable, which is true of a stopped Ollama; `502` is kept for a backend that answered with something broken, so clients and operators can tell the two apart.
 
-**No retries after a timeout.** OpenAI SDKs retry 5xx responses twice by default. With a 120-second read timeout, retrying a hung model could hold a client for six minutes, so any response caused by a timeout carries `x-should-retry: false`, which the SDKs obey.
+**No retries after a timeout or into an open breaker.** OpenAI SDKs retry 5xx responses twice by default. With a 120-second read timeout, retrying a hung model could hold a client for six minutes, so any response caused by a timeout carries `x-should-retry: false`, which the SDKs obey. So does any response involving an open breaker: the SDKs would otherwise wait out `Retry-After` and retry into the same `503`. `Retry-After` still says when the breaker lets its next trial request through.
 
 **Why oversized requests get 400, not 429.** OpenAI answers a request that exceeds the entire per-minute token limit with `429`. This gateway deliberately returns `400` instead. A `429` tells the client to retry later, and the OpenAI SDKs retry `429`s automatically, but this request can never succeed however long the client waits. A `400` fails immediately and tells the client to shorten the messages or lower `max_tokens`.
 
+### Simple versions and their replacements
+
+Each optimized piece sits behind the same interface as the simple version it replaced, and a setting switches back for comparison. Measured numbers, from the tests:
+
+| Piece | Simple version | Optimized version (default) |
+|-------|----------------|-----------------------------|
+| Token budget (`TOKEN_BUDGET`) | Fixed minute windows: a burst straddling a boundary gets **2.0×** the limit (200 tokens against 100 within about 120 ms) | Token bucket: the same burst gets **1.1×** (110 tokens) |
+| Prompt estimate (`PROMPT_ESTIMATE`) | Characters ÷ 4: `Name one planet. One word.` is estimated at **7** tokens; `llama3.2:3b` counts **32** (4.6× too low) | Calibrated: **39** before any real count (it errs high), **32** after learning from one different prompt |
+| Fallback (`FALLBACK_STRATEGY`) | Sequential: with Ollama hung, every `auto` request waits the read timeout (**~310 ms** each at a 0.3 s timeout) | Circuit breaker: after 3 failures, `auto` requests skip Ollama (**7 ms**) until a trial after the cooldown |
+
+The calibrated estimate learns only a per-model **base** overhead. The per-message part is a fixed `PER_MESSAGE_TOKENS` (5 for `llama3.2:3b`'s template) and is subtracted before learning, so a long conversation does not inflate later short requests: after a 20-message chat, a one-message request still reserves 26 tokens (its real cost), where learning the whole overhead would reserve 121. The learning rules err toward reserving too much: the first real count replaces the default, a higher count is adopted at once, a lower one moves the base only a tenth of the way down, and a count under half the base is ignored as a prompt-cache artifact.
+
+Circuit-breaker state is kept in memory, per process. It is soft state that only saves time: losing it on a restart costs a few failed attempts to re-learn, each process pays at most `BREAKER_FAILURE_THRESHOLD` failures per cooldown, and routing never waits on Redis. Rate limits and token budgets, which are fairness guarantees, are the parts shared through Redis.
+
 ### Known limits
 
-The token budget and the fallback are simple first versions; each sits behind an interface (`TokenBudget`, `FallbackStrategy`) so a better algorithm can replace it.
-
-- A caller can spend a full budget just before a minute ends and another just after, briefly using up to twice the limit.
-- The characters ÷ 4 estimate undercounts real prompts, because chat templates add special tokens and headers: with `llama3.2:3b`, a bare `hi` is estimated at 1 token and costs 26, and a short question is estimated at 7 and costs 32. Settlement charges the difference, which can take usage past the limit after the request was admitted. The Ollama provider logs `estimated=… reported=…` for every request to size a better estimate later.
-- Fallback remembers nothing: with Ollama stopped, every `auto` request first makes one (instantly refused) connection attempt, and with Ollama hung, every `auto` request waits the full read timeout before mock answers. A circuit breaker would skip a backend that failed recently.
+- A full bucket still allows a burst of one minute's budget at once; the bucket only removes the second burst a window boundary used to allow.
+- The estimate is still characters ÷ 4 for the messages themselves; only the template overhead is learned. Prompts that tokenize very differently from English prose (code, other languages) can still be under-reserved, and settlement charges the difference.
+- One outlier count can raise a model's learned base, which then comes down by a tenth of the gap per request. That errs toward reserving too much, which only costs headroom near the limit.
+- With Ollama hung, one trial request per cooldown still waits the full read timeout.
 - A request refused for tokens still counts against requests per minute.
-- If the process dies between reserving and settling, the reservation stays counted until the minute ends.
+- If the process dies between reserving and settling, the reservation stays counted until the bucket refills.
 
 ---
 
@@ -425,10 +453,8 @@ This project demonstrates:
 
 ## 🌟 Possible Enhancements
 
-- Circuit breaker for fallback routing
-- Tokenizer-based prompt estimates
+- Tokenizer-based prompt estimates for the message content
 - Streaming chat completions
-- Smoother token budget without the minute-boundary burst
 - JWT authentication
 - Persistent user management
 - Cloud deployment (AWS / GCP)

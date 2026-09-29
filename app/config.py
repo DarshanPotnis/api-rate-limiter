@@ -3,7 +3,16 @@
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, HttpUrl, NonNegativeFloat, PositiveFloat, PositiveInt, RedisDsn, field_validator
+from pydantic import (
+    Field,
+    HttpUrl,
+    NonNegativeFloat,
+    NonNegativeInt,
+    PositiveFloat,
+    PositiveInt,
+    RedisDsn,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -20,6 +29,15 @@ class Settings(BaseSettings):
     ollama_connect_timeout_seconds: PositiveFloat = 2.0
     ollama_read_timeout_seconds: PositiveFloat = 120.0
     auto_fallback: Annotated[tuple[str, ...], NoDecode] = ()
+
+    # Each optimized piece keeps its brute-force predecessor selectable, for comparison.
+    prompt_estimate: Literal["calibrated", "characters"] = "calibrated"
+    prompt_overhead_default: NonNegativeInt = 32
+    per_message_tokens: NonNegativeInt = 5
+    token_budget: Literal["token_bucket", "fixed_window"] = "token_bucket"
+    fallback_strategy: Literal["circuit_breaker", "sequential"] = "circuit_breaker"
+    breaker_failure_threshold: PositiveInt = 3
+    breaker_cooldown_seconds: PositiveFloat = 30.0
 
     @field_validator("auto_fallback", mode="before")
     @classmethod

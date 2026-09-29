@@ -6,6 +6,7 @@ import redis.asyncio
 from fastapi import Depends, Request
 
 from app.budgets import TokenBudget
+from app.estimates import PromptEstimator
 from app.gateway.auth import Caller, get_caller
 from app.limiters import AsyncRateLimiter, AsyncSlidingLogLimiter
 from app.routing import FallbackStrategy, ModelRegistry
@@ -16,6 +17,7 @@ from app.tiers import LIMIT_WINDOW_SECONDS, Tier
 class GatewayResources:
     redis: redis.asyncio.Redis
     token_budget: TokenBudget
+    estimator: PromptEstimator
     registry: ModelRegistry
     fallback: FallbackStrategy
     started_at: int
@@ -42,6 +44,10 @@ async def get_registry(resources: GatewayResources = Depends(get_resources)) -> 
 
 async def get_fallback(resources: GatewayResources = Depends(get_resources)) -> FallbackStrategy:
     return resources.fallback
+
+
+async def get_estimator(resources: GatewayResources = Depends(get_resources)) -> PromptEstimator:
+    return resources.estimator
 
 
 async def get_token_budget(resources: GatewayResources = Depends(get_resources)) -> TokenBudget:

@@ -1,24 +1,33 @@
 """Tests for the OpenAI-compatible gateway at /v1."""
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+import time
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from functools import partial
-from typing import cast
 
 import anyio
 import httpx
 import pytest
-import redis.asyncio
 
-from app.budgets.fixed_window import KEY_PREFIX
+from app.budgets import FixedWindowTokenBudget, TokenBucketBudget, TokenBudget
+from app.config import get_settings
+from app.estimates import CalibratedEstimator, CharacterEstimator
 from app.gateway.app import gateway
 from app.gateway.auth import Caller, get_caller
-from app.budgets import TokenBudget
-from app.gateway.dependencies import get_registry, get_token_budget
+from app.gateway.dependencies import get_estimator, get_fallback, get_registry, get_token_budget
 from app.main import app
 from app.providers import Completion, CompletionRequest, MockProvider, Provider, ProviderError
-from app.routing import ModelRegistry
+from app.routing import CircuitBreakerFallback, FallbackStrategy, ModelRegistry, SequentialFallback
 from app.tiers import Tier
-from tests.fake_ollama import OLLAMA_MODEL, Handler, ollama_down, ollama_hangs, ollama_provider, ollama_up
+from tests.fake_ollama import (
+    OLLAMA_MODEL,
+    Handler,
+    counted,
+    ollama_down,
+    ollama_hangs,
+    ollama_hangs_for,
+    ollama_provider,
+    ollama_up,
+)
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("token_window_has_room")]
 
@@ -53,6 +62,7 @@ def as_caller(key: str) -> Callable[[Tier], None]:
 
 class FailingProvider:
     name = "failing"
+    reports_real_usage = False
 
     async def complete(self, request: CompletionRequest) -> Completion:
         raise ProviderError("backend unavailable")
@@ -76,9 +86,17 @@ def use_ollama(handler: Handler, *, mock: Provider | None = None) -> None:
     use_registry(ModelRegistry(models=models, aliases={"auto": [OLLAMA_MODEL, "mock"]}))
 
 
-async def tokens_used(client: redis.asyncio.Redis, user_id: str) -> int:
-    used = await cast(Awaitable[str | None], client.hget(f"{KEY_PREFIX}:{user_id}", "used"))
-    return int(used or 0)
+def use_fallback(strategy: FallbackStrategy) -> None:
+    gateway.dependency_overrides[get_fallback] = lambda: strategy
+
+
+async def tokens_left(user_id: str, limit: int = TEST_TIER.tokens_per_minute) -> int:
+    """The caller's remaining budget in the gateway's own token budget, whichever kind it is.
+
+    A zero-token reservation reads the balance without changing it.
+    """
+    budget: TokenBudget = gateway.state.resources.token_budget
+    return (await budget.reserve(user_id, 0, limit=limit)).state.remaining
 
 
 def chat(content: str = "hi", **fields: object) -> dict[str, object]:
@@ -184,7 +202,6 @@ async def test_settling_frees_the_tokens_a_request_did_not_use(
 async def test_a_provider_failure_releases_the_reservation(
     client: httpx.AsyncClient,
     as_caller: Callable[[Tier], None],
-    async_redis_db: redis.asyncio.Redis,
     key: str,
 ) -> None:
     as_caller(TEST_TIER)
@@ -194,19 +211,19 @@ async def test_a_provider_failure_releases_the_reservation(
 
     assert response.status_code == 502
     assert response.json()["error"]["type"] == "server_error"
-    assert await tokens_used(async_redis_db, key) == 0
+    assert await tokens_left(key) == 100
 
 
 async def test_a_cancelled_request_releases_the_reservation(
     client: httpx.AsyncClient,
     as_caller: Callable[[Tier], None],
-    async_redis_db: redis.asyncio.Redis,
     key: str,
 ) -> None:
     started = anyio.Event()
 
     class SlowProvider:
         name = "slow"
+        reports_real_usage = False
 
         async def complete(self, request: CompletionRequest) -> Completion:
             started.set()
@@ -222,13 +239,13 @@ async def test_a_cancelled_request_releases_the_reservation(
     async with anyio.create_task_group() as tasks:
         tasks.start_soon(partial(completions, client, chat(max_tokens=50)))
         await started.wait()
-        assert await tokens_used(async_redis_db, key) == 51
+        assert await tokens_left(key) == 49
         # Close the gateway's idle Redis connections so the release has to open a new one
         # first: a real wait that the cancellation would interrupt if it were not shielded.
         await gateway.state.resources.redis.connection_pool.disconnect()
         tasks.cancel_scope.cancel()
 
-    assert await tokens_used(async_redis_db, key) == 0
+    assert await tokens_left(key) == 100
 
 
 async def test_a_request_larger_than_the_whole_budget_returns_400_without_using_quota(
@@ -249,7 +266,6 @@ async def test_a_request_larger_than_the_whole_budget_returns_400_without_using_
 async def test_concurrent_requests_never_push_usage_past_the_limit(
     client: httpx.AsyncClient,
     as_caller: Callable[[Tier], None],
-    async_redis_db: redis.asyncio.Redis,
     key: str,
 ) -> None:
     as_caller(TEST_TIER)
@@ -265,7 +281,7 @@ async def test_concurrent_requests_never_push_usage_past_the_limit(
             tasks.start_soon(send)
 
     assert sorted(statuses) == [200] * 10 + [429] * 10
-    assert await tokens_used(async_redis_db, key) == 100
+    assert await tokens_left(key) == 0
 
 
 @pytest.mark.parametrize(
@@ -327,7 +343,6 @@ async def test_models_reflects_what_ollama_reports(
 async def test_ollamas_real_token_counts_are_what_gets_settled(
     client: httpx.AsyncClient,
     as_caller: Callable[[Tier], None],
-    async_redis_db: redis.asyncio.Redis,
     key: str,
 ) -> None:
     as_caller(TEST_TIER)
@@ -338,7 +353,7 @@ async def test_ollamas_real_token_counts_are_what_gets_settled(
     assert response.status_code == 200
     assert response.json()["usage"] == {"prompt_tokens": 37, "completion_tokens": 12, "total_tokens": 49}
     assert response.headers["x-ratelimit-remaining-tokens"] == "51"
-    assert await tokens_used(async_redis_db, key) == 49
+    assert await tokens_left(key) == 51
 
 
 @pytest.mark.parametrize(
@@ -349,7 +364,6 @@ async def test_ollamas_real_token_counts_are_what_gets_settled(
 async def test_a_specific_model_that_fails_returns_an_error_and_releases_the_reservation(
     client: httpx.AsyncClient,
     as_caller: Callable[[Tier], None],
-    async_redis_db: redis.asyncio.Redis,
     key: str,
     handler: Handler,
     status_code: int,
@@ -363,7 +377,7 @@ async def test_a_specific_model_that_fails_returns_an_error_and_releases_the_res
     assert response.status_code == status_code
     assert response.json()["error"]["type"] == "server_error"
     assert response.json()["error"]["code"] == code
-    assert await tokens_used(async_redis_db, key) == 0
+    assert await tokens_left(key) == 100
 
 
 @pytest.mark.parametrize(
@@ -413,7 +427,6 @@ async def test_auto_is_answered_by_ollama_while_it_is_up(
 async def test_every_provider_in_the_chain_failing_returns_502_and_releases_the_reservation(
     client: httpx.AsyncClient,
     as_caller: Callable[[Tier], None],
-    async_redis_db: redis.asyncio.Redis,
     key: str,
     handler: Handler,
     should_retry: str | None,
@@ -428,7 +441,7 @@ async def test_every_provider_in_the_chain_failing_returns_502_and_releases_the_
     assert (error["type"], error["code"]) == ("server_error", "all_providers_failed")
     assert OLLAMA_MODEL in error["message"] and "mock" in error["message"]
     assert response.headers.get("x-should-retry") == should_retry
-    assert await tokens_used(async_redis_db, key) == 0
+    assert await tokens_left(key) == 100
 
 
 async def test_streaming_is_rejected(client: httpx.AsyncClient, as_caller: Callable[[Tier], None]) -> None:
@@ -488,3 +501,134 @@ async def test_an_unexpected_error_returns_an_openai_style_500(
         "error": {"message": "The gateway hit an unexpected error.", "type": "server_error", "param": None, "code": None}
     }
     assert "redis exploded" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("env", "chosen"),
+    [
+        ({}, (CalibratedEstimator, TokenBucketBudget, CircuitBreakerFallback)),
+        (
+            {"PROMPT_ESTIMATE": "characters", "TOKEN_BUDGET": "fixed_window", "FALLBACK_STRATEGY": "sequential"},
+            (CharacterEstimator, FixedWindowTokenBudget, SequentialFallback),
+        ),
+    ],
+    ids=["defaults", "brute-force"],
+)
+async def test_settings_choose_each_implementation(
+    app_uses_test_redis: None, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], chosen: tuple[type, ...]
+) -> None:
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+
+    async with gateway.router.lifespan_context(gateway):
+        resources = gateway.state.resources
+        assert (type(resources.estimator), type(resources.token_budget), type(resources.fallback)) == chosen
+
+
+@pytest.mark.parametrize(
+    ("override", "model", "status_code"),
+    [(None, OLLAMA_MODEL, 400), (CharacterEstimator, OLLAMA_MODEL, 200), (None, "mock", 200)],
+    ids=["ollama-calibrated", "ollama-characters", "mock-exact"],
+)
+async def test_ollama_requests_reserve_the_calibrated_estimate(
+    client: httpx.AsyncClient,
+    as_caller: Callable[[Tier], None],
+    override: type[CharacterEstimator] | None,
+    model: str,
+    status_code: int,
+) -> None:
+    # "hi" with max_tokens 60 needs 1 + 60 = 61 by characters, or 1 + 32 + 60 = 93 with the
+    # default base overhead, which no longer fits a 90-token budget.
+    as_caller(Tier("tight", requests_per_minute=100, tokens_per_minute=90))
+    use_ollama(ollama_up())
+    if override is not None:
+        gateway.dependency_overrides[get_estimator] = override
+
+    response = await completions(client, {**chat(max_tokens=60), "model": model})
+
+    assert response.status_code == status_code
+
+
+async def test_ollamas_counts_teach_the_estimate_and_mocks_do_not(
+    client: httpx.AsyncClient, as_caller: Callable[[Tier], None]
+) -> None:
+    as_caller(TEST_TIER)
+    estimator = gateway.state.resources.estimator
+    assert isinstance(estimator, CalibratedEstimator)
+
+    use_ollama(ollama_up(prompt_eval_count=26))
+    await completions(client, {**chat(max_tokens=16), "model": OLLAMA_MODEL})
+    learned = await estimator.base_overhead(OLLAMA_MODEL)
+    use_ollama(ollama_down)  # "auto" is now answered by mock
+    await completions(client, {**chat(max_tokens=16), "model": "auto"})
+
+    assert learned == 25
+    assert await estimator.base_overhead(OLLAMA_MODEL) == 25
+
+
+async def test_a_specific_model_with_an_open_breaker_fails_fast_and_says_when_to_retry(
+    client: httpx.AsyncClient, as_caller: Callable[[Tier], None]
+) -> None:
+    as_caller(TEST_TIER)
+    calls: list[str] = []
+    use_ollama(counted(ollama_down, calls))
+    for _ in range(3):  # the default breaker threshold
+        await completions(client, {**chat(max_tokens=16), "model": OLLAMA_MODEL})
+
+    response = await completions(client, {**chat(max_tokens=16), "model": OLLAMA_MODEL})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "model_unavailable"
+    assert 1 <= int(response.headers["retry-after"]) <= 30
+    assert response.headers["x-should-retry"] == "false"
+    assert len(calls) == 3
+
+
+async def test_auto_with_every_model_open_or_failing_says_when_to_retry(
+    client: httpx.AsyncClient, as_caller: Callable[[Tier], None]
+) -> None:
+    as_caller(TEST_TIER)
+    calls: list[str] = []
+    use_ollama(counted(ollama_down, calls), mock=FailingProvider())
+    for _ in range(3):
+        await completions(client, {**chat(max_tokens=16), "model": "auto"})
+
+    response = await completions(client, {**chat(max_tokens=16), "model": "auto"})
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "all_providers_failed"
+    assert 1 <= int(response.headers["retry-after"]) <= 30
+    assert response.headers["x-should-retry"] == "false"
+    assert len(calls) == 3
+
+
+async def test_with_ollama_hung_an_open_breaker_stops_auto_waiting_for_the_timeout(
+    client: httpx.AsyncClient, as_caller: Callable[[Tier], None]
+) -> None:
+    as_caller(TEST_TIER)
+    timeout = 0.3
+    strategies: dict[str, FallbackStrategy] = {
+        "sequential fallback": SequentialFallback(),
+        "circuit breaker": CircuitBreakerFallback(failure_threshold=3, cooldown_seconds=30),
+    }
+    latencies: dict[str, list[float]] = {}
+    for name, strategy in strategies.items():
+        calls: list[str] = []
+        use_ollama(ollama_hangs_for(timeout, calls))
+        use_fallback(strategy)
+        latencies[name] = []
+        for _ in range(4):
+            started = time.perf_counter()
+            response = await completions(client, {**chat(max_tokens=16), "model": "auto"})
+            latencies[name].append(time.perf_counter() - started)
+            assert response.headers["x-gateway-provider"] == "mock"
+        print(
+            f"\n{name}: auto request latencies with Ollama hung ({timeout}s read timeout): "
+            + ", ".join(f"{seconds * 1000:.0f} ms" for seconds in latencies[name])
+            + f"; Ollama was tried {len(calls)} times"
+        )
+
+    assert all(seconds >= timeout for seconds in latencies["sequential fallback"])
+    assert all(seconds >= timeout for seconds in latencies["circuit breaker"][:3])
+    assert latencies["circuit breaker"][3] < 0.05

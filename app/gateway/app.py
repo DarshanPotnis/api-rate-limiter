@@ -6,6 +6,7 @@ in order, then settle the reservation against the usage of whichever model answe
 If none answers or the request is cancelled, the reservation is released instead.
 """
 
+import math
 import secrets
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -15,11 +16,13 @@ import anyio
 import redis.asyncio
 from fastapi import Depends, FastAPI, Response
 
-from app.budgets import FixedWindowTokenBudget, Reservation, TokenBudget
-from app.config import get_settings
+from app.budgets import FixedWindowTokenBudget, Reservation, TokenBucketBudget, TokenBudget
+from app.config import Settings, get_settings
+from app.estimates import CalibratedEstimator, CharacterEstimator, PromptEstimator
 from app.gateway.auth import Caller, get_caller
 from app.gateway.dependencies import (
     GatewayResources,
+    get_estimator,
     get_fallback,
     get_registry,
     get_request_limiter,
@@ -40,8 +43,17 @@ from app.gateway.schemas import (
 from app.limiters import AsyncRateLimiter
 from app.providers import CompletionRequest, Message, MockProvider, ProviderTimeout, ProviderUnavailable
 from app.providers.ollama import OllamaProvider, create_ollama_client
-from app.providers.tokens import estimate_prompt_tokens
-from app.routing import AllTargetsFailed, Answer, Attempt, FallbackStrategy, ModelRegistry, SequentialFallback, Target
+from app.routing import (
+    AllTargetsFailed,
+    Answer,
+    Attempt,
+    CircuitBreakerFallback,
+    CircuitOpen,
+    FallbackStrategy,
+    ModelRegistry,
+    SequentialFallback,
+    Target,
+)
 from app.tiers import LIMIT_WINDOW_SECONDS
 
 AUTO_ALIAS = "auto"
@@ -67,12 +79,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         app.state.resources = GatewayResources(
             redis=redis_client,
-            token_budget=FixedWindowTokenBudget(redis_client, window_seconds=LIMIT_WINDOW_SECONDS),
+            token_budget=_token_budget(settings, redis_client),
+            estimator=_estimator(settings, redis_client),
             registry=registry,
-            fallback=SequentialFallback(),
+            fallback=_fallback(settings),
             started_at=int(time.time()),
         )
         yield
+
+
+def _token_budget(settings: Settings, client: redis.asyncio.Redis) -> TokenBudget:
+    if settings.token_budget == "fixed_window":
+        return FixedWindowTokenBudget(client, window_seconds=LIMIT_WINDOW_SECONDS)
+    return TokenBucketBudget(client, refill_seconds=LIMIT_WINDOW_SECONDS)
+
+
+def _estimator(settings: Settings, client: redis.asyncio.Redis) -> PromptEstimator:
+    if settings.prompt_estimate == "characters":
+        return CharacterEstimator()
+    return CalibratedEstimator(
+        client, default_overhead=settings.prompt_overhead_default, per_message_tokens=settings.per_message_tokens
+    )
+
+
+def _fallback(settings: Settings) -> FallbackStrategy:
+    if settings.fallback_strategy == "sequential":
+        return SequentialFallback()
+    return CircuitBreakerFallback(
+        failure_threshold=settings.breaker_failure_threshold, cooldown_seconds=settings.breaker_cooldown_seconds
+    )
 
 
 gateway = FastAPI(title="LLM Gateway", lifespan=lifespan)
@@ -95,6 +130,7 @@ async def create_chat_completion(
     caller: Caller = Depends(get_caller),
     registry: ModelRegistry = Depends(get_registry),
     fallback: FallbackStrategy = Depends(get_fallback),
+    estimator: PromptEstimator = Depends(get_estimator),
     limiter: AsyncRateLimiter = Depends(get_request_limiter),
     budget: TokenBudget = Depends(get_token_budget),
 ) -> ChatCompletion:
@@ -110,7 +146,7 @@ async def create_chat_completion(
         max_tokens=_max_tokens(body),
     )
     tier = caller.tier
-    cost = estimate_prompt_tokens(request.messages) + request.max_tokens
+    cost = await estimator.estimate(targets, request.messages) + request.max_tokens
     if cost > tier.tokens_per_minute:
         raise OpenAIError(
             400,
@@ -142,10 +178,10 @@ async def create_chat_completion(
         raise OpenAIError(
             429,
             f"Rate limit reached for tokens per minute on the {tier.name} tier: limit {state.limit}, "
-            f"remaining {state.remaining}, requested {cost}. Try again in {state.retry_after_seconds}s.",
+            f"remaining {state.remaining}, requested {cost}. Try again in {reservation.retry_after_seconds}s.",
             error_type="tokens",
             code="rate_limit_exceeded",
-            headers={**headers, **token_limit_headers(state), "retry-after": str(state.retry_after_seconds)},
+            headers={**headers, **token_limit_headers(state), "retry-after": str(reservation.retry_after_seconds)},
         )
 
     answer = await _answer_or_release(
@@ -156,6 +192,7 @@ async def create_chat_completion(
     # recorded even if this request is being cancelled.
     with anyio.CancelScope(shield=True):
         state = await budget.settle(reservation, completion.total_tokens)
+    await estimator.observe(answer.target, request.messages, completion.prompt_tokens)
 
     response.headers.update(
         {**headers, **token_limit_headers(state), "x-gateway-provider": answer.target.provider.name}
@@ -213,11 +250,17 @@ async def _answer_or_release(
 
 
 def _routing_error(model: str, attempts: Sequence[Attempt], *, alias: bool) -> OpenAIError:
-    """503 for a model that is down, 504 for one that timed out, 502 when it answered badly
-    or when every model behind an alias failed."""
-    # A model that timed out will probably time out again. OpenAI SDKs retry 5xx twice by
-    # default, which could hold a client for three full read timeouts, so tell them not to.
-    headers = {"x-should-retry": "false"} if any(isinstance(a.error, ProviderTimeout) for a in attempts) else {}
+    """503 for a model that is down or whose breaker is open, 504 for one that timed out,
+    502 when it answered badly or when every model behind an alias failed."""
+    headers: dict[str, str] = {}
+    open_circuits = [a.error for a in attempts if isinstance(a.error, CircuitOpen)]
+    # OpenAI SDKs retry 5xx twice by default. A model that timed out will probably time out
+    # again, and an open breaker would only answer the retry with the same 503, so tell them
+    # not to; Retry-After says when the earliest breaker lets a trial through.
+    if open_circuits or any(isinstance(a.error, ProviderTimeout) for a in attempts):
+        headers["x-should-retry"] = "false"
+    if open_circuits:
+        headers["retry-after"] = str(max(1, math.ceil(min(e.retry_after_seconds for e in open_circuits))))
     if alias:
         tried = "; ".join(f"{a.target.model} ({a.target.provider.name}): {a.error}" for a in attempts)
         return OpenAIError(
@@ -238,7 +281,11 @@ def _routing_error(model: str, attempts: Sequence[Attempt], *, alias: bool) -> O
         )
     if isinstance(attempt.error, ProviderUnavailable):
         return OpenAIError(
-            503, f"The model '{model}' is unavailable: {attempt.error}", error_type="server_error", code="model_unavailable"
+            503,
+            f"The model '{model}' is unavailable: {attempt.error}",
+            error_type="server_error",
+            code="model_unavailable",
+            headers=headers,
         )
     return OpenAIError(
         502, "The model provider failed to complete the request.", error_type="server_error", code="provider_error"

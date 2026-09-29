@@ -14,6 +14,7 @@ class MockProvider:
     """
 
     name = "mock"
+    reports_real_usage = False
 
     def __init__(self, *, latency_seconds: float = 0.0) -> None:
         if latency_seconds < 0:
