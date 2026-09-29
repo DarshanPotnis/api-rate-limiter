@@ -64,10 +64,11 @@ def test_a_real_completion_is_settled_with_ollamas_own_counts(
     caplog.set_level(logging.INFO, logger="app.providers.ollama")
     gateway.dependency_overrides[get_caller] = lambda: Caller(user_id=key, tier=SLOW_TIER)
     budget = gateway.state.resources.token_budget
-    assert http.portal is not None
+    portal = http.portal
+    assert portal is not None
 
     def tokens_left() -> int:  # a zero-token reservation reads the balance without changing it
-        return http.portal.call(partial(budget.reserve, key, 0, limit=SLOW_TIER.tokens_per_minute)).state.remaining
+        return portal.call(partial(budget.reserve, key, 0, limit=SLOW_TIER.tokens_per_minute)).state.remaining
 
     before = tokens_left()
     started = time.monotonic()

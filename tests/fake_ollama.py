@@ -28,7 +28,7 @@ def ollama_up(
     eval_count: int | None = 12,
     done_reason: str = "stop",
     models: Sequence[str] = (OLLAMA_MODEL,),
-) -> Handler:
+) -> SyncHandler:
     """An Ollama that answers every chat with ``content`` and reports the given token counts."""
 
     def handle(request: httpx.Request) -> httpx.Response:
