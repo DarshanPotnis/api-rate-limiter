@@ -142,10 +142,10 @@ async def create_chat_completion(
         raise OpenAIError(
             429,
             f"Rate limit reached for tokens per minute on the {tier.name} tier: limit {state.limit}, "
-            f"remaining {state.remaining}, requested {cost}. Try again in {state.retry_after_seconds}s.",
+            f"remaining {state.remaining}, requested {cost}. Try again in {reservation.retry_after_seconds}s.",
             error_type="tokens",
             code="rate_limit_exceeded",
-            headers={**headers, **token_limit_headers(state), "retry-after": str(state.retry_after_seconds)},
+            headers={**headers, **token_limit_headers(state), "retry-after": str(reservation.retry_after_seconds)},
         )
 
     answer = await _answer_or_release(

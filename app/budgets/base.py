@@ -7,7 +7,10 @@ from typing import Protocol
 
 @dataclass(frozen=True, slots=True)
 class BudgetState:
-    """A caller's token budget in the current window. Times are epoch ms on the Redis clock."""
+    """A caller's token budget right now. Times are epoch ms on the Redis clock.
+
+    ``reset_at_ms`` is when the budget is back to its full limit.
+    """
 
     limit: int
     remaining: int
@@ -18,11 +21,6 @@ class BudgetState:
     def reset_after_ms(self) -> int:
         return self.reset_at_ms - self.now_ms
 
-    @property
-    def retry_after_seconds(self) -> int:
-        """Whole seconds until the window resets, rounded up."""
-        return math.ceil(self.reset_after_ms / 1000)
-
 
 @dataclass(frozen=True, slots=True)
 class Reservation:
@@ -31,13 +29,20 @@ class Reservation:
     key: str
     tokens: int
     allowed: bool
-    window_start_ms: int
+    settle_ref: int
+    """Whatever the budget needs to settle this reservation later, such as its window."""
     state: BudgetState
+    retry_after_ms: int
+    """For a refused reservation, how long until the same request would fit; 0 if admitted."""
+
+    @property
+    def retry_after_seconds(self) -> int:
+        return math.ceil(self.retry_after_ms / 1000)
 
 
 class TokenBudget(Protocol):
     async def reserve(self, key: str, tokens: int, *, limit: int) -> Reservation:
-        """Reserve ``tokens`` for ``key`` if they fit within ``limit`` for the current window."""
+        """Reserve ``tokens`` for ``key`` if they fit within ``limit``. Zero tokens reads the balance."""
         ...
 
     async def settle(self, reservation: Reservation, actual_tokens: int) -> BudgetState:

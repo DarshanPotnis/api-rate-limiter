@@ -42,12 +42,14 @@ class FixedWindowTokenBudget:
             keys=[f"{KEY_PREFIX}:{key}"],
             args=[limit, self._window_ms, tokens],
         )
+        state = BudgetState(limit=limit, remaining=int(remaining), reset_at_ms=int(reset_at_ms), now_ms=int(now_ms))
         return Reservation(
             key=key,
             tokens=tokens,
             allowed=bool(allowed),
-            window_start_ms=int(window_start_ms),
-            state=BudgetState(limit=limit, remaining=int(remaining), reset_at_ms=int(reset_at_ms), now_ms=int(now_ms)),
+            settle_ref=int(window_start_ms),
+            state=state,
+            retry_after_ms=0 if allowed else state.reset_after_ms,
         )
 
     async def settle(self, reservation: Reservation, actual_tokens: int) -> BudgetState:
@@ -58,7 +60,7 @@ class FixedWindowTokenBudget:
         limit = reservation.state.limit
         remaining, reset_at_ms, now_ms = await self._settle(
             keys=[f"{KEY_PREFIX}:{reservation.key}"],
-            args=[limit, self._window_ms, reservation.window_start_ms, actual_tokens - reservation.tokens],
+            args=[limit, self._window_ms, reservation.settle_ref, actual_tokens - reservation.tokens],
         )
         return BudgetState(limit=limit, remaining=int(remaining), reset_at_ms=int(reset_at_ms), now_ms=int(now_ms))
 
