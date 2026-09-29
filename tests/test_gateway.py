@@ -636,4 +636,6 @@ async def test_with_ollama_hung_an_open_breaker_stops_auto_waiting_for_the_timeo
 
     assert all(seconds >= timeout for seconds in latencies["sequential fallback"])
     assert all(seconds >= timeout for seconds in latencies["circuit breaker"][:3])
-    assert latencies["circuit breaker"][3] < 0.05
+    # Relative, so a slow machine slows both sides alike: once open, the breaker skips the
+    # wait that the sequential fallback pays on every request.
+    assert latencies["circuit breaker"][3] < latencies["sequential fallback"][3] / 5
