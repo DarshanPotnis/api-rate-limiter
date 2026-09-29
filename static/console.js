@@ -154,13 +154,19 @@ function outcomeKind(outcome) {
   return "error";
 }
 
-function outcomeLabel(outcome) {
+/** The status alone: "200", "429 requests", "429 tokens", "503 model_unavailable"… */
+function statusLabel(outcome) {
   const kind = outcomeKind(outcome);
-  if (kind === "ok") return `${outcome.status} ${outcome.provider ?? ""}`.trim();
+  if (kind === "ok") return String(outcome.status);
   if (kind === "requests") return "429 requests";
   if (kind === "tokens") return "429 tokens";
   if (outcome.status === null) return "network error";
   return `${outcome.status} ${outcome.error?.code ?? outcome.error?.type ?? "error"}`;
+}
+
+/** For burst chips, which have no separate answered-by column: "200 mock" on success. */
+function outcomeLabel(outcome) {
+  return outcomeKind(outcome) === "ok" ? `${statusLabel(outcome)} ${outcome.provider ?? ""}`.trim() : statusLabel(outcome);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -431,7 +437,7 @@ function addToLog(outcome) {
     tier: outcome.request.tier,
     model: outcome.request.model,
     answered: outcome.ok ? answeredBy(outcome) : "–",
-    status: outcomeLabel(outcome),
+    status: statusLabel(outcome),
     kind: outcomeKind(outcome),
     latency: `${Math.round(outcome.latencyMs)} ms`,
     tokens: outcome.ok && outcome.json.usage ? formatCount(outcome.json.usage.total_tokens) : "–",
