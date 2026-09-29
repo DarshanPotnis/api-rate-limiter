@@ -14,7 +14,7 @@ Require python3
 Set Shell "bash"
 Set FontSize 15
 Set Width 1300
-Set Height 820
+Set Height 620
 Set Padding 24
 Set TypingSpeed 45ms
 
