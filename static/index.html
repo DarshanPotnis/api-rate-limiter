@@ -1,61 +1,121 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>API Rate Limiter Dashboard</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>LLM Gateway console</title>
+  <link rel="stylesheet" href="/static/console.css">
+  <script type="module" src="/static/console.js"></script>
 </head>
 <body>
+  <header class="topbar">
+    <h1>LLM Gateway <span class="muted">console</span></h1>
+    <nav aria-label="Gateway links">
+      <a href="/v1/docs">API docs</a>
+      <a href="/status">Status JSON</a>
+    </nav>
+  </header>
 
-  <nav>
-    <div class="logo"> API Rate Limiter</div>
-  </nav>
-
-  <section class="hero">
-    <div class="hero-text">
-      <h1>What is an API Rate Limiter?</h1>
-      <p>
-        A real-time gateway that protects APIs from abuse using
-        Redis-backed rate limiting and API key authentication.
-      </p>
-      <button onclick="scrollToDashboard()">Get Started</button>
-    </div>
-  </section>
-
-  <section class="dashboard" id="dashboard">
-    <div class="card">
-      <h2>Test Protected API</h2>
-
-      <div class="api-key-group">
-        <select id="apiTier" onchange="setApiKey()">
-          <option value="free-tier-key">Free Tier</option>
-          <option value="pro-tier-key">Pro Tier</option>
-          <option value="enterprise-key">Enterprise Tier</option>
-        </select>
-
-        <input
-          id="apiKey"
-          value="free-tier-key"
-          placeholder="Enter API Key"
-        />
+  <main class="layout">
+    <section class="panel playground" aria-labelledby="playground-title">
+      <h2 id="playground-title">Playground</h2>
+      <form id="request-form">
+        <div class="field">
+          <label for="tier">Tier</label>
+          <select id="tier" name="tier">
+            <option value="free-tier-key" data-name="Free" selected>Free: 5 requests, 2,000 tokens a minute</option>
+            <option value="pro-tier-key" data-name="Pro">Pro: 60 requests, 40,000 tokens a minute</option>
+            <option value="enterprise-key" data-name="Enterprise">Enterprise: 600 requests, 400,000 tokens a minute</option>
+          </select>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="model">Model</label>
+            <select id="model" name="model">
+              <option value="mock" selected>mock</option>
+            </select>
+          </div>
+          <div class="field narrow">
+            <label for="max-tokens">Max tokens</label>
+            <input id="max-tokens" name="max_tokens" type="number" min="1" max="400000" step="1" value="64" required>
+          </div>
+        </div>
+        <div class="field">
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt" name="prompt" rows="3" required>Explain rate limiting in one sentence.</textarea>
+        </div>
+        <div class="actions">
+          <button type="submit" id="send">Send</button>
+          <span class="hint">Ctrl + Enter or ⌘ + Enter sends from the prompt</span>
+          <span id="model-note" class="hint"></span>
+        </div>
+      </form>
+      <div id="result" class="result" aria-live="polite">
+        <p class="placeholder">Send a request to see the reply, its usage, and which model answered.</p>
       </div>
+    </section>
 
-      <button onclick="callAPI()">Call Protected API</button>
-
-      <div id="statusBadge" class="badge hidden"></div>
-
-      <div class="progress-container hidden" id="progressContainer">
-        <div class="progress-bar" id="progressBar"></div>
+    <section class="panel limits" aria-labelledby="limits-title">
+      <h2 id="limits-title">Live limits <span id="limits-tier" class="muted">Free</span></h2>
+      <div class="gauge-block">
+        <div class="gauge-label"><span>Requests this minute</span><span id="requests-value">not seen yet</span></div>
+        <div class="gauge" id="requests-gauge" role="meter" aria-label="Requests remaining" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0">
+          <div class="gauge-fill" id="requests-fill"></div>
+        </div>
+        <p class="gauge-note" id="requests-note">Send a request as this tier to see its limits.</p>
       </div>
-
-      <div class="reset-timer hidden" id="resetTimer">
-        ⏳ Resets in <span id="countdown">--</span> seconds
+      <div class="gauge-block">
+        <div class="gauge-label"><span>Token budget</span><span id="tokens-value">not seen yet</span></div>
+        <div class="gauge" id="tokens-gauge" role="meter" aria-label="Tokens remaining" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0">
+          <div class="gauge-fill" id="tokens-fill"></div>
+        </div>
+        <p class="gauge-note" id="tokens-note">The gauge refills between requests at the rate the gateway reports.</p>
       </div>
+    </section>
 
-      <div class="result" id="result"></div>
-    </div>
-  </section>
+    <section class="panel burst" aria-labelledby="burst-title">
+      <h2 id="burst-title">Burst</h2>
+      <form id="burst-form" class="row">
+        <div class="field narrow">
+          <label for="burst-count">Requests at once</label>
+          <input id="burst-count" name="count" type="number" min="1" max="50" step="1" value="10" required>
+        </div>
+        <div class="actions end">
+          <button type="submit" id="burst-send">Fire burst</button>
+        </div>
+      </form>
+      <p class="hint">Sends them all together with the playground's tier, model, prompt and max tokens.</p>
+      <p id="burst-summary" class="summary" aria-live="polite"></p>
+      <ol id="burst-results" class="chips" aria-label="Burst results"></ol>
+    </section>
 
-  <script src="/static/app.js"></script>
+    <section class="panel health" aria-labelledby="health-title">
+      <h2 id="health-title">Model health</h2>
+      <table>
+        <thead>
+          <tr><th scope="col">Model</th><th scope="col">Provider</th><th scope="col">Breaker</th><th scope="col">Cooldown</th></tr>
+        </thead>
+        <tbody id="health-rows"></tbody>
+      </table>
+      <p id="health-note" class="gauge-note">Loading /status…</p>
+    </section>
+
+    <section class="panel log" aria-labelledby="log-title">
+      <h2 id="log-title">Recent requests</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Time</th><th scope="col">Tier</th><th scope="col">Model</th><th scope="col">Answered by</th>
+              <th scope="col">Status</th><th scope="col" class="number">Latency</th><th scope="col" class="number">Tokens</th>
+            </tr>
+          </thead>
+          <tbody id="log-rows"></tbody>
+        </table>
+      </div>
+      <p id="log-empty" class="gauge-note">No requests yet.</p>
+    </section>
+  </main>
 </body>
 </html>

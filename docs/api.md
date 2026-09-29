@@ -95,20 +95,39 @@ entire per-minute token limit with `429`. This gateway deliberately returns `400
 a `429` tells the client to retry later, and the OpenAI SDKs retry `429`s automatically, but
 this request can never succeed however long the client waits.
 
-## Rate-limited demo endpoint and dashboard
-
-The original rate limiter is still served next to the gateway.
+## Console and status
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `GET` | `/` | Dashboard: pick a tier, call `/protected`, watch the remaining requests and reset countdown |
-| `GET` | `/protected` | Rate-limited by the key's tier; send the key as `X-API-KEY` |
+| `GET` | `/` | The gateway console: a playground, live limits, bursts, model health and a request log |
+| `GET` | `/status` | Read-only routing state, polled by the console; no API key needed |
 | `GET` | `/health` | `{"status": "ok"}` |
 
-`/protected` returns `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`
-(epoch seconds when the oldest request in the window ages out), and `429` with `Retry-After`
-when the limit is reached.
+The console is plain HTML, CSS and JavaScript served by the gateway, with no build step and
+no external resources. It is sent with a Content-Security-Policy that allows only its own
+origin, so it works offline, and it writes everything from the server with `textContent`.
+It calls the `/v1` API with the demo keys, reads its limits from the `x-ratelimit-*`
+headers, and refreshes model health from `/status` every two seconds.
 
-```bash
-curl -i http://localhost:8000/protected -H "X-API-KEY: free-tier-key"
+`GET /status` reports the fallback strategy, the token-budget kind, and each configured
+model's circuit breaker. It reads in-memory state only and never calls a model, so polling
+it is cheap and cannot trip anything.
+
+```json
+{
+  "fallback_strategy": "circuit_breaker",
+  "token_budget": "token_bucket",
+  "models": [
+    {"id": "mock", "provider": "mock", "breaker": "closed", "consecutive_failures": 0, "cooldown_remaining_seconds": 0.0},
+    {"id": "llama3.2:3b", "provider": "ollama", "breaker": "open", "consecutive_failures": 3, "cooldown_remaining_seconds": 21.4}
+  ]
+}
 ```
+
+`breaker` is `closed`, `open` (skipped until the cooldown ends) or `half_open` (the cooldown
+has passed and the next request is the trial). With `FALLBACK_STRATEGY=sequential` there are
+no breakers, and `breaker` and `consecutive_failures` are `null`.
+
+The v1 rate-limited endpoint `/protected`, its `X-API-KEY` header and the original
+dashboard were retired when the console replaced them; the `v1-original` tag keeps that
+version.
