@@ -51,6 +51,19 @@ def test_ollama_defaults_and_the_auto_chain(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.usefixtures("no_dotenv")
+def test_the_optimized_implementations_are_the_defaults() -> None:
+    settings = Settings()
+
+    assert (settings.prompt_estimate, settings.token_budget, settings.fallback_strategy) == (
+        "calibrated",
+        "token_bucket",
+        "circuit_breaker",
+    )
+    assert (settings.prompt_overhead_default, settings.per_message_tokens) == (32, 5)
+    assert (settings.breaker_failure_threshold, settings.breaker_cooldown_seconds) == (3, 30.0)
+
+
+@pytest.mark.usefixtures("no_dotenv")
 def test_auto_fallback_is_a_comma_separated_list(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTO_FALLBACK", "qwen3:4b, mock")
 
@@ -67,6 +80,13 @@ def test_auto_fallback_is_a_comma_separated_list(monkeypatch: pytest.MonkeyPatch
         ("OLLAMA_MODEL", ""),
         ("OLLAMA_READ_TIMEOUT_SECONDS", "0"),
         ("LOG_LEVEL", "LOUD"),
+        ("PROMPT_ESTIMATE", "psychic"),
+        ("PROMPT_OVERHEAD_DEFAULT", "-1"),
+        ("PER_MESSAGE_TOKENS", "-1"),
+        ("TOKEN_BUDGET", "leaky_bucket"),
+        ("FALLBACK_STRATEGY", "random"),
+        ("BREAKER_FAILURE_THRESHOLD", "0"),
+        ("BREAKER_COOLDOWN_SECONDS", "0"),
     ],
 )
 @pytest.mark.usefixtures("no_dotenv")

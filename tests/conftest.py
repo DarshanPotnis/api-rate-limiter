@@ -16,6 +16,7 @@ import redis.asyncio
 
 from app.auth import VALID_API_KEYS
 from app.config import get_settings
+from app.estimates.calibrated import KEY_PREFIX as OVERHEAD_KEY_PREFIX
 from app.main import limiter_for_tier
 from app.redis_client import get_redis
 
@@ -88,9 +89,12 @@ def _clear_app_caches() -> None:
         cached.cache_clear()
 
 
-def _delete_demo_user_keys(client: redis.Redis) -> None:
-    for user_id in VALID_API_KEYS.values():
-        created = list(client.scan_iter(match=f"*{user_id}*"))
+def _delete_app_keys(client: redis.Redis) -> None:
+    """Keys the real app writes to the test database: the demo users' limits and budgets,
+    and the prompt overheads the gateway learns per model."""
+    patterns = [f"*{user_id}*" for user_id in VALID_API_KEYS.values()] + [f"{OVERHEAD_KEY_PREFIX}:*"]
+    for pattern in patterns:
+        created = list(client.scan_iter(match=pattern))
         if created:
             client.delete(*created)
 
@@ -99,11 +103,12 @@ def _delete_demo_user_keys(client: redis.Redis) -> None:
 def app_uses_test_redis(redis_db: redis.Redis, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Point the real app, with no dependency overrides, at the test database.
 
-    Requests then run as the built-in demo users, whose keys are removed before and after.
+    Requests then run as the built-in demo users. Their keys, and the prompt overheads the
+    app learns, are removed before and after.
     """
     monkeypatch.setenv("REDIS_URL", TEST_REDIS_URL)
     _clear_app_caches()
-    _delete_demo_user_keys(redis_db)
+    _delete_app_keys(redis_db)
     yield
-    _delete_demo_user_keys(redis_db)
+    _delete_app_keys(redis_db)
     _clear_app_caches()
