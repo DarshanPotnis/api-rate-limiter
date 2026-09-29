@@ -105,3 +105,9 @@ def test_the_page_is_responsive_and_supports_both_color_schemes(page: tuple[str,
     assert meta["viewport"] == "width=device-width, initial-scale=1"
     assert meta["color-scheme"] == "light dark"
     assert "prefers-color-scheme: dark" in (STATIC / "console.css").read_text()
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-API-KEY": "free-tier-key"}])
+def test_the_v1_protected_endpoint_is_retired(headers: dict[str, str]) -> None:
+    # The v1 dashboard was its only user; the console calls the gateway itself.
+    assert TestClient(app).get("/protected", headers=headers).status_code == 404
