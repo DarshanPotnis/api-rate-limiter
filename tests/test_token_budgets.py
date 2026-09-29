@@ -120,6 +120,7 @@ async def test_a_burst_across_a_boundary_gets_2x_from_a_fixed_window_but_about_1
         "token bucket": TokenBucketBudget(async_redis_db, refill_seconds=1),
     }
     admitted: dict[str, int] = {}
+    spans: dict[str, int] = {}
     for name, budget in budgets.items():
         caller = f"{key}-{name.replace(' ', '-')}"
         until_boundary = 1000 - (await _redis_ms(async_redis_db)) % 1000
@@ -130,10 +131,13 @@ async def test_a_burst_across_a_boundary_gets_2x_from_a_fixed_window_but_about_1
         after = await _burst(budget, caller, cost=10)
         span = await _redis_ms(async_redis_db) - started
         admitted[name] = before + after
+        spans[name] = span
         print(
             f"\n{name}: {before} + {after} = {before + after} tokens admitted within {span} ms across a "
             f"boundary, {(before + after) / LIMIT:.1f}x the limit of {LIMIT}"
         )
 
     assert admitted["fixed window"] >= 1.9 * LIMIT
-    assert admitted["token bucket"] <= 1.3 * LIMIT
+    # A bucket can only add what it refilled during the burst (LIMIT tokens a second here),
+    # plus one request's worth of rounding, however long a slow machine takes.
+    assert admitted["token bucket"] <= LIMIT + spans["token bucket"] * LIMIT / 1000 + 10

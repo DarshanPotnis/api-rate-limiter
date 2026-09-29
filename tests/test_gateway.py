@@ -498,7 +498,12 @@ async def test_an_unexpected_error_returns_an_openai_style_500(
 
     assert response.status_code == 500
     assert response.json() == {
-        "error": {"message": "The gateway hit an unexpected error.", "type": "server_error", "param": None, "code": None}
+        "error": {
+            "message": "The gateway hit an unexpected error.",
+            "type": "server_error",
+            "param": None,
+            "code": None,
+        }
     }
     assert "redis exploded" not in response.text
 
@@ -631,4 +636,6 @@ async def test_with_ollama_hung_an_open_breaker_stops_auto_waiting_for_the_timeo
 
     assert all(seconds >= timeout for seconds in latencies["sequential fallback"])
     assert all(seconds >= timeout for seconds in latencies["circuit breaker"][:3])
-    assert latencies["circuit breaker"][3] < 0.05
+    # Relative, so a slow machine slows both sides alike: once open, the breaker skips the
+    # wait that the sequential fallback pays on every request.
+    assert latencies["circuit breaker"][3] < latencies["sequential fallback"][3] / 5

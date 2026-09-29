@@ -11,3 +11,20 @@ services:
       retries: 5
       start_period: 5s
     restart: unless-stopped
+
+  gateway:
+    build: .
+    # Override the host port when 8000 is already taken, e.g. GATEWAY_PORT=8080 docker compose up -d
+    ports:
+      - "${GATEWAY_PORT:-8000}:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # Ollama is optional and runs on the host. Without it, "mock" still answers and
+      # "auto" falls back to it.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped

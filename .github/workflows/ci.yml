@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, types and tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Lint
+        run: ruff check .
+      - name: Check formatting
+        run: ruff format --check .
+      - name: Type-check
+        run: mypy app tests scripts
+      - name: Test
+        # Redis is the service container above. No Ollama runs here, so the Ollama
+        # integration tests skip themselves.
+        run: pytest
+        env:
+          TEST_REDIS_URL: redis://localhost:6379/15
+
+  demo:
+    name: One-command demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install the demo's client
+        run: pip install -r requirements-dev.txt
+      - name: Start Redis and the gateway
+        run: docker compose up -d --build --wait
+      - name: Run the demo
+        run: python scripts/demo.py
+      - name: Show the gateway's logs
+        if: failure()
+        run: docker compose logs gateway
+      - name: Stop the stack
+        if: always()
+        run: docker compose down

@@ -1,11 +1,11 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import lru_cache
-
-from fastapi import FastAPI, Depends, HTTPException, Response
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
 from pathlib import Path
+
+from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.auth import get_api_key
 from app.config import get_settings

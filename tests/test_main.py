@@ -68,9 +68,7 @@ def test_unknown_api_key_is_rejected() -> None:
 
 
 @pytest.mark.usefixtures("app_uses_test_redis")
-@pytest.mark.parametrize(
-    ("api_key", "limit"), [("free-tier-key", 5), ("pro-tier-key", 60), ("enterprise-key", 600)]
-)
+@pytest.mark.parametrize(("api_key", "limit"), [("free-tier-key", 5), ("pro-tier-key", 60), ("enterprise-key", 600)])
 def test_each_tier_reports_its_own_request_limit(api_key: str, limit: int) -> None:
     response = TestClient(app).get("/protected", headers={"X-API-KEY": api_key})
 
